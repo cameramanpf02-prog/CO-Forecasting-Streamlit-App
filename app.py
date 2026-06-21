@@ -443,11 +443,17 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
             mode='lines+markers', marker=dict(size=4),
             hovertemplate=f'%{{x|%Y-%m}}<br>{model_key}: %{{y:,.0f}}<extra></extra>'
         ))
-        # CI band
+        # CI band — convert hex color to rgba for transparency
+        def hex_to_rgba(hex_color, alpha=0.12):
+            h = hex_color.lstrip('#')
+            r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
+            return f'rgba({r},{g},{b},{alpha})'
+
         fig.add_trace(go.Scatter(
             x=list(fc['ci'].index) + list(fc['ci'].index[::-1]),
             y=list(fc['ci'].iloc[:,1]) + list(fc['ci'].iloc[:,0][::-1]),
-            fill='toself', fillcolor=col.replace(')', ',0.1)').replace('rgb', 'rgba') if col.startswith('rgb') else col + '22',
+            fill='toself',
+            fillcolor=hex_to_rgba(col),
             line=dict(color='rgba(255,255,255,0)'),
             name=f'{model_key} 95% CI', showlegend=False,
             hoverinfo='skip'
