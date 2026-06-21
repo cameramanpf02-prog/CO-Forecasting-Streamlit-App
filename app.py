@@ -653,12 +653,108 @@ def load_data(file_bytes):
 with st.spinner("📂 Loading EPPO data..."):
     SECTORS = load_data(uploaded_file.read())
 
-# Quick data summary
-col1, col2, col3 = st.columns(3)
-for col, (name, df) in zip([col1, col2, col3], SECTORS.items()):
-    ts = df['total']
-    col.metric(f"{name} Sector", f"{ts.loc['2010':].mean():,.0f} KT avg",
-               f"{ts.index[0].strftime('%Y-%m')} → {ts.index[-1].strftime('%Y-%m')}")
+# ── Annual CO₂ Summary + 3-Sector Combined ────────────────────────────────
+# Build annual totals per sector (2010–2025)
+annual_data = {}
+for name, df in SECTORS.items():
+    ts = df['total'].loc['2010':'2025']
+    annual = ts.resample('YE').sum()
+    annual.index = annual.index.year
+    annual_data[name] = annual
+
+all_years = sorted(set().union(*[a.index for a in annual_data.values()]))
+combined_annual = pd.Series(0.0, index=all_years)
+for name, a in annual_data.items():
+    combined_annual = combined_annual.add(a, fill_value=0)
+
+# ── Row 1: Key numbers (latest full year vs 5-yr ago) ─────────────────────
+latest_yr  = 2024
+prev_yr    = 2019  # pre-COVID reference
+peak_yr    = int(combined_annual.idxmax())
+
+c1, c2, c3, c4 = st.columns(4)
+total_latest = combined_annual.get(latest_yr, 0)
+total_prev   = combined_annual.get(prev_yr, 0)
+chg_pct      = (total_latest - total_prev) / total_prev * 100 if total_prev else 0
+
+c1.metric("🌍 Total CO₂ (2024)", f"{total_latest:,.0f} KT",
+          f"{chg_pct:+.1f}% vs {prev_yr}")
+c2.metric("⚡ Power (2024)",
+          f"{annual_data['Power'].get(latest_yr,0):,.0f} KT",
+          f"{annual_data['Power'].get(latest_yr,0)/total_latest*100:.1f}% of total")
+c3.metric("🚗 Transport (2024)",
+          f"{annual_data['Transport'].get(latest_yr,0):,.0f} KT",
+          f"{annual_data['Transport'].get(latest_yr,0)/total_latest*100:.1f}% of total")
+c4.metric("🏭 Industry (2024)",
+          f"{annual_data['Industry'].get(latest_yr,0):,.0f} KT",
+          f"{annual_data['Industry'].get(latest_yr,0)/total_latest*100:.1f}% of total")
+
+# ── Row 2: Annual stacked bar chart (2010–2025) ───────────────────────────
+fig_annual = go.Figure()
+for name in ['Power', 'Transport', 'Industry']:
+    a = annual_data[name]
+    yrs = [y for y in all_years if y in a.index]
+    fig_annual.add_trace(go.Bar(
+        x=yrs,
+        y=[a[y] for y in yrs],
+        name=name,
+        marker_color=COLORS[name],
+        hovertemplate=f'<b>{name}</b><br>%{{x}}: %{{y:,.0f}} KT<extra></extra>',
+    ))
+
+# Combined line
+fig_annual.add_trace(go.Scatter(
+    x=list(combined_annual.index),
+    y=list(combined_annual.values),
+    name='Total (3 Sectors)',
+    mode='lines+markers',
+    line=dict(color='#1A252F', width=2.5, dash='dot'),
+    marker=dict(size=6, symbol='diamond'),
+    yaxis='y2',
+    hovertemplate='<b>Total</b><br>%{x}: %{y:,.0f} KT<extra></extra>',
+))
+
+# COVID band
+fig_annual.add_vrect(x0=2019.5, x1=2021.5,
+    fillcolor='rgba(241,148,138,0.18)', layer='below', line_width=0,
+    annotation_text='COVID-19', annotation_position='top left',
+    annotation_font_size=9, annotation_font_color='#c0392b')
+
+fig_annual.update_layout(
+    title=dict(text='<b>Annual CO₂ Emission — Thailand 3 Sectors (2010–2025)</b>',
+               font=dict(size=15, color='#0d2137')),
+    barmode='stack',
+    xaxis=dict(title='Year', dtick=1, tickangle=-30, showgrid=False),
+    yaxis=dict(title='CO₂ (1,000 Tons)', showgrid=True, gridcolor='#f0f0f0', tickformat=',.0f'),
+    yaxis2=dict(title='Total CO₂ (1,000 Tons)', overlaying='y', side='right',
+                showgrid=False, tickformat=',.0f'),
+    legend=dict(orientation='h', y=1.05, x=0, font=dict(size=11)),
+    height=400,
+    plot_bgcolor='white',
+    paper_bgcolor='white',
+    margin=dict(l=60, r=80, t=70, b=60),
+    hovermode='x unified',
+)
+st.plotly_chart(fig_annual, use_container_width=True)
+
+# ── Row 3: Period summary table ────────────────────────────────────────────
+period_rows = []
+for period, yr_range in [('Pre-COVID (2015–2019)', range(2015,2020)),
+                          ('COVID (2020–2021)',      range(2020,2022)),
+                          ('Post-COVID (2022–2024)', range(2022,2025))]:
+    yrs = [y for y in yr_range if y in combined_annual.index]
+    if not yrs: continue
+    row = {'Period': period}
+    total_p = 0
+    for name in ['Power','Transport','Industry']:
+        v = sum(annual_data[name].get(y,0) for y in yrs) / len(yrs)
+        row[f'{name} avg/yr (KT)'] = f"{v:,.0f}"
+        total_p += v
+    row['Total avg/yr (KT)'] = f"{total_p:,.0f}"
+    period_rows.append(row)
+
+st.markdown("**📋 Average Annual CO₂ by Period**")
+st.dataframe(pd.DataFrame(period_rows), hide_index=True, use_container_width=True)
 
 st.markdown("---")
 
@@ -690,8 +786,8 @@ status_ph.empty()
 # ─────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────
-tab_overview, tab_forecast, tab_metrics, tab_pvalue, tab_data = st.tabs([
-    "📊 Overview", "🔮 Forecast — All Sectors", "📈 Performance Metrics", "🔬 P-value Analysis", "📋 Data Table"
+tab_overview, tab_year, tab_forecast, tab_metrics, tab_pvalue, tab_data = st.tabs([
+    "📊 Overview", "🔍 Year Explorer", "🔮 Forecast — All Sectors", "📈 Performance Metrics", "🔬 P-value Analysis", "📋 Data Table"
 ])
 
 # ═══════════════════════════
@@ -742,7 +838,265 @@ with tab_overview:
             """, unsafe_allow_html=True)
 
 # ═══════════════════════════
-# TAB 2: FORECAST — ALL 3 SECTORS
+# TAB 2: YEAR EXPLORER
+# ═══════════════════════════
+with tab_year:
+    st.markdown('<div class="section-title">🔍 Year Explorer — เลือกปีเพื่อดูการปล่อย CO₂</div>', unsafe_allow_html=True)
+
+    # ── Year selector ──────────────────────────────────────────────────────
+    avail_years_actual = sorted([y for y in range(2010, 2026)
+                                  if any(y in annual_data[n].index for n in annual_data)])
+    # Add forecast years (2026+) from best models
+    fc_years = []
+    FC_INDEX_full = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
+    for y in sorted(set(FC_INDEX_full.year)):
+        fc_years.append(y)
+    all_selectable = avail_years_actual + fc_years
+
+    sel_yr = st.select_slider(
+        "เลือกปี",
+        options=all_selectable,
+        value=2024,
+    )
+    is_forecast_year = sel_yr >= 2026
+
+    # ── Compute values for selected year ──────────────────────────────────
+    sector_vals   = {}
+    sector_models = {}   # model → value (for forecast years)
+
+    if not is_forecast_year:
+        # Actual data
+        for name in ['Power', 'Transport', 'Industry']:
+            ts_s = SECTORS[name]['total']
+            yr_data = ts_s[ts_s.index.year == sel_yr]
+            sector_vals[name] = yr_data.sum() if len(yr_data) else 0
+        total_val = sum(sector_vals.values())
+
+        # ── Metric cards ───────────────────────────────────────────────
+        st.markdown(f"### 📅 ปี {sel_yr} — ค่าจริง (Actual)")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🌍 รวม 3 ภาค", f"{total_val:,.0f} KT")
+        c2.metric("⚡ Power",     f"{sector_vals['Power']:,.0f} KT",
+                  f"{sector_vals['Power']/total_val*100:.1f}% ของทั้งหมด")
+        c3.metric("🚗 Transport", f"{sector_vals['Transport']:,.0f} KT",
+                  f"{sector_vals['Transport']/total_val*100:.1f}% ของทั้งหมด")
+        c4.metric("🏭 Industry",  f"{sector_vals['Industry']:,.0f} KT",
+                  f"{sector_vals['Industry']/total_val*100:.1f}% ของทั้งหมด")
+
+    else:
+        # Forecast year — show per model per sector
+        st.markdown(f"### 📅 ปี {sel_yr} — ค่าพยากรณ์ (Forecast)")
+
+        model_totals = {k: 0.0 for k in MODEL_INFO.keys()}
+        model_sector = {k: {} for k in MODEL_INFO.keys()}
+
+        for name in ['Power', 'Transport', 'Industry']:
+            for mkey in MODEL_INFO.keys():
+                fc = ALL_FORECASTS[name].get(mkey)
+                if fc is None: continue
+                yr_fc = fc['pred'][fc['pred'].index.year == sel_yr]
+                val = yr_fc.sum() if len(yr_fc) else 0
+                model_sector[mkey][name] = val
+                model_totals[mkey] += val
+
+        # Show best model cards first
+        best_vals = {name: model_sector[SECTOR_BEST[name]].get(name, 0)
+                     for name in ['Power', 'Transport', 'Industry']}
+        total_best = sum(best_vals.values())
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("🌍 รวม 3 ภาค (Best models)", f"{total_best:,.0f} KT")
+        c2.metric("⚡ Power",     f"{best_vals['Power']:,.0f} KT",
+                  f"{best_vals['Power']/total_best*100:.1f}% ของทั้งหมด" if total_best else "")
+        c3.metric("🚗 Transport", f"{best_vals['Transport']:,.0f} KT",
+                  f"{best_vals['Transport']/total_best*100:.1f}% ของทั้งหมด" if total_best else "")
+        c4.metric("🏭 Industry",  f"{best_vals['Industry']:,.0f} KT",
+                  f"{best_vals['Industry']/total_best*100:.1f}% ของทั้งหมด" if total_best else "")
+
+        # Model comparison table for forecast year
+        st.markdown(f"**เปรียบเทียบทุกโมเดล — ปี {sel_yr}**")
+        fc_rows = []
+        for mkey, label in MODEL_INFO.items():
+            row = {'Model': label.split(' — ')[0]}
+            for name in ['Power', 'Transport', 'Industry']:
+                row[name] = f"{model_sector[mkey].get(name, 0):,.0f}"
+            row['Total (KT)'] = f"{model_totals[mkey]:,.0f}"
+            best_flag = any(SECTOR_BEST[n] == mkey for n in ['Power','Transport','Industry'])
+            row['Note'] = '⭐ Best' if best_flag else ''
+            fc_rows.append(row)
+        st.dataframe(pd.DataFrame(fc_rows), hide_index=True, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── Pie chart — sector share ──────────────────────────────────────────
+    if not is_forecast_year:
+        pie_vals  = [sector_vals[n] for n in ['Power','Transport','Industry']]
+        pie_label = [n for n in ['Power','Transport','Industry']]
+    else:
+        pie_vals  = [best_vals[n] for n in ['Power','Transport','Industry']]
+        pie_label = ['Power','Transport','Industry']
+
+    fig_pie = go.Figure(go.Pie(
+        labels=pie_label,
+        values=pie_vals,
+        marker=dict(colors=[COLORS['Power'], COLORS['Transport'], COLORS['Industry']],
+                    line=dict(color='white', width=2)),
+        textinfo='label+percent+value',
+        texttemplate='%{label}<br>%{percent}<br>%{value:,.0f} KT',
+        hole=0.42,
+        hovertemplate='<b>%{label}</b><br>%{value:,.0f} KT (%{percent})<extra></extra>',
+    ))
+    fig_pie.update_layout(
+        title=dict(text=f'<b>สัดส่วนการปล่อย CO₂ — ปี {sel_yr}</b>',
+                   font=dict(size=15, color='#0d2137')),
+        height=360,
+        paper_bgcolor='white',
+        margin=dict(l=20, r=20, t=60, b=20),
+        annotations=[dict(text=f'<b>{sel_yr}</b>', x=0.5, y=0.5,
+                          font_size=20, showarrow=False, font_color='#0d2137')]
+    )
+
+    # ── Model selector + monthly chart ────────────────────────────────────
+    col_pie, col_ctrl = st.columns([1, 1])
+    with col_pie:
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+    with col_ctrl:
+        st.markdown(f"**📈 เลือกโมเดลเพื่อเทียบกับค่าจริง — ปี {sel_yr}**")
+        sel_model_yr = st.selectbox(
+            "เลือกโมเดล",
+            options=list(MODEL_INFO.keys()),
+            format_func=lambda k: MODEL_INFO[k].split(' — ')[0] +
+                (' ⭐ Best' if SECTOR_BEST.get(
+                    next((s for s in ['Power','Transport','Industry']
+                          if SECTOR_BEST[s]==k), None)) == k else ''),
+            key='year_model_sel',
+        )
+        sel_sector_yr = st.selectbox(
+            "เลือก Sector",
+            options=['Power', 'Transport', 'Industry', 'All Sectors'],
+            key='year_sector_sel',
+        )
+
+    # ── Monthly comparison chart for selected year ─────────────────────────
+    st.markdown(f"**รายเดือน — ปี {sel_yr} | โมเดล: {MODEL_INFO[sel_model_yr].split(' — ')[0]} | Sector: {sel_sector_yr}**")
+
+    sector_list = ['Power','Transport','Industry'] if sel_sector_yr == 'All Sectors' else [sel_sector_yr]
+    n_cols = len(sector_list)
+    fig_monthly = make_subplots(rows=1, cols=n_cols,
+                                 subplot_titles=[f'<b>{s}</b>' for s in sector_list],
+                                 shared_yaxes=(n_cols > 1))
+
+    MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+
+    for ci, sname in enumerate(sector_list, 1):
+        ts_s = SECTORS[sname]['total']
+        fc_s = ALL_FORECASTS[sname].get(sel_model_yr)
+        sc   = COLORS[sname]
+
+        # Actual monthly values for this year
+        actual_yr = ts_s[ts_s.index.year == sel_yr]
+        if len(actual_yr):
+            fig_monthly.add_trace(go.Bar(
+                x=[d.strftime('%b') for d in actual_yr.index],
+                y=actual_yr.values,
+                name='Actual' if ci == 1 else '',
+                marker_color='#1A252F',
+                opacity=0.75,
+                showlegend=(ci == 1),
+                hovertemplate='%{x}<br>Actual: %{y:,.0f} KT<extra></extra>',
+            ), row=1, col=ci)
+
+        # Model predicted/forecast values for this year
+        if fc_s:
+            # Test period (2024-2025)
+            tp = fc_s['test_pred']
+            tp_yr = tp[tp.index.year == sel_yr]
+            if len(tp_yr):
+                fig_monthly.add_trace(go.Scatter(
+                    x=[d.strftime('%b') for d in tp_yr.index],
+                    y=tp_yr.values,
+                    name=f'{sel_model_yr} (test)' if ci == 1 else '',
+                    mode='lines+markers',
+                    line=dict(color=COLORS.get(sel_model_yr,'#888'), width=2.2),
+                    marker=dict(size=7),
+                    showlegend=(ci == 1),
+                    hovertemplate=f'%{{x}}<br>{sel_model_yr}: %{{y:,.0f}} KT<extra></extra>',
+                ), row=1, col=ci)
+
+            # Forecast period (2026+)
+            fp = fc_s['pred']
+            fp_yr = fp[fp.index.year == sel_yr]
+            if len(fp_yr):
+                ci_yr = fc_s['ci'][fc_s['ci'].index.year == sel_yr]
+                fig_monthly.add_trace(go.Scatter(
+                    x=[d.strftime('%b') for d in fp_yr.index],
+                    y=fp_yr.values,
+                    name=f'{sel_model_yr} forecast' if ci == 1 else '',
+                    mode='lines+markers',
+                    line=dict(color=COLORS.get(sel_model_yr,'#888'), width=2.2, dash='dash'),
+                    marker=dict(size=7, symbol='diamond'),
+                    showlegend=(ci == 1),
+                    hovertemplate=f'%{{x}}<br>Forecast: %{{y:,.0f}} KT<extra></extra>',
+                ), row=1, col=ci)
+                # CI ribbon
+                fig_monthly.add_trace(go.Scatter(
+                    x=[d.strftime('%b') for d in fp_yr.index] + [d.strftime('%b') for d in fp_yr.index[::-1]],
+                    y=list(ci_yr.iloc[:,1]) + list(ci_yr.iloc[:,0][::-1]),
+                    fill='toself',
+                    fillcolor=f'rgba({int(COLORS.get(sel_model_yr,"#888888").lstrip("#")[0:2],16)},'
+                              f'{int(COLORS.get(sel_model_yr,"#888888").lstrip("#")[2:4],16)},'
+                              f'{int(COLORS.get(sel_model_yr,"#888888").lstrip("#")[4:6],16)},0.12)',
+                    line=dict(color='rgba(0,0,0,0)'),
+                    showlegend=False, hoverinfo='skip',
+                ), row=1, col=ci)
+
+        # Annual total annotation
+        actual_total = actual_yr.sum() if len(actual_yr) else 0
+        if actual_total:
+            fig_monthly.add_annotation(
+                text=f'Actual total<br><b>{actual_total:,.0f} KT</b>',
+                xref=f'x{ci}' if ci > 1 else 'x', yref='paper',
+                x=5, y=1.12, showarrow=False,
+                font=dict(size=10, color='#1A252F'),
+                bgcolor='rgba(255,255,255,0.8)',
+                bordercolor='#ccc', borderwidth=1,
+            )
+
+    fig_monthly.update_layout(
+        height=380,
+        plot_bgcolor='white', paper_bgcolor='white',
+        legend=dict(orientation='h', y=1.18, x=0),
+        hovermode='x unified',
+        margin=dict(l=50, r=20, t=90, b=50),
+        barmode='overlay',
+    )
+    fig_monthly.update_xaxes(showgrid=False, categoryorder='array',
+                              categoryarray=MONTH_LABELS)
+    fig_monthly.update_yaxes(showgrid=True, gridcolor='#f0f0f0', tickformat=',.0f')
+    st.plotly_chart(fig_monthly, use_container_width=True)
+
+    # ── YoY comparison ────────────────────────────────────────────────────
+    if sel_yr > 2010 and not is_forecast_year:
+        prev_y = sel_yr - 1
+        st.markdown(f"**📊 เปรียบเทียบ {prev_y} vs {sel_yr}**")
+        yoy_cols = st.columns(4)
+        total_prev_y = sum(
+            SECTORS[n]['total'][SECTORS[n]['total'].index.year == prev_y].sum()
+            for n in ['Power','Transport','Industry'])
+        for col_yoy, name in zip(yoy_cols[1:], ['Power','Transport','Industry']):
+            ts_s  = SECTORS[name]['total']
+            v_now = ts_s[ts_s.index.year == sel_yr].sum()
+            v_prv = ts_s[ts_s.index.year == prev_y].sum()
+            chg   = (v_now - v_prv) / v_prv * 100 if v_prv else 0
+            col_yoy.metric(name, f"{v_now:,.0f} KT", f"{chg:+.1f}% YoY")
+        v_now_t = sum(SECTORS[n]['total'][SECTORS[n]['total'].index.year==sel_yr].sum()
+                      for n in ['Power','Transport','Industry'])
+        chg_t = (v_now_t - total_prev_y) / total_prev_y * 100 if total_prev_y else 0
+        yoy_cols[0].metric("🌍 Total", f"{v_now_t:,.0f} KT", f"{chg_t:+.1f}% YoY")
+
+# ═══════════════════════════
+# TAB 3: FORECAST — ALL 3 SECTORS
 # ═══════════════════════════
 with tab_forecast:
     st.markdown('<div class="section-title">🔮 Forecast — All 3 Sectors on One Page</div>', unsafe_allow_html=True)
