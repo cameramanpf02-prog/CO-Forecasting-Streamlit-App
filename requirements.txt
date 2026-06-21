@@ -1,48 +1,36 @@
-# ════════════════════════════════════════════════════════════════════
-# CO₂ Emission Forecasting Dashboard — Requirements
-# Academic Conference Edition
-# ════════════════════════════════════════════════════════════════════
+# CO₂ Emission Forecasting — Thailand 3 Sectors
+# Streamlit Academic Conference App
+# Requirements — tested Python 3.10+
 
-# ── Web Framework ────────────────────────────────────────────────────
-streamlit>=1.35.0
+# ── Web Framework ──────────────────────────────────────────────────────────
+streamlit>=1.32.0
 
-# ── Data Processing ──────────────────────────────────────────────────
+# ── Data & Computation ─────────────────────────────────────────────────────
 pandas>=2.0.0
 numpy>=1.24.0
-openpyxl>=3.1.0           # อ่านไฟล์ .xlsx ของ EPPO
+openpyxl>=3.1.0          # Read EPPO .xlsx files
 
-# ── Time Series Models ───────────────────────────────────────────────
-statsmodels>=0.14.0        # ARIMA, SARIMAX, ExponentialSmoothing
-pmdarima>=2.0.4            # auto_arima (BIC-based order selection)
+# ── Time Series Models ─────────────────────────────────────────────────────
+statsmodels>=0.14.0       # ARIMA, SARIMAX, ETS (ExponentialSmoothing)
+pmdarima>=2.0.0           # auto_arima — automatic order selection (BIC)
+prophet>=1.1.5            # Meta's Prophet model (requires pystan)
 
-# ── Machine Learning ─────────────────────────────────────────────────
-scikit-learn>=1.3.0        # Ridge regression, StandardScaler, metrics
+# ── Machine Learning ───────────────────────────────────────────────────────
+scikit-learn>=1.3.0       # Ridge regression, StandardScaler, metrics
 
-# ── Visualization ────────────────────────────────────────────────────
-plotly>=5.18.0             # Interactive charts (Scatter, Bar, Heatmap, Radar)
+# ── Visualization ──────────────────────────────────────────────────────────
+plotly>=5.18.0            # Interactive charts (Scatter, Bar, Radar, Subplots)
 
-# ── Optional (ถ้าต้องการเพิ่ม Prophet model) ────────────────────────
-# prophet>=1.1.5
-# cmdstanpy>=1.2.0
+# ── Optional: faster Prophet build ─────────────────────────────────────────
+# cmdstanpy>=1.2.0        # Alternative Stan backend for Prophet (optional)
 
-# ════════════════════════════════════════════════════════════════════
-# Installation Instructions
-# ════════════════════════════════════════════════════════════════════
+# ── Notes ──────────────────────────────────────────────────────────────────
+# Prophet requires a C++ compiler for pystan.
+# On Ubuntu/Debian: sudo apt-get install build-essential
+# On macOS:        xcode-select --install
+# On Windows:      install Visual Studio Build Tools
 #
-# 1. สร้าง virtual environment (แนะนำ):
-#    python -m venv venv
-#    source venv/bin/activate        # Linux/macOS
-#    venv\Scripts\activate           # Windows
+# If Prophet installation fails, install via conda:
+#   conda install -c conda-forge prophet
 #
-# 2. ติดตั้ง dependencies:
-#    pip install -r requirements.txt
-#
-# 3. รันแอป:
-#    streamlit run app.py
-#
-# 4. เปิดบราวเซอร์ที่:
-#    http://localhost:8501
-#
-# ────────────────────────────────────────────────────────────────────
-# Python Version: 3.9+ (แนะนำ 3.10 หรือ 3.11)
-# ════════════════════════════════════════════════════════════════════
+# pystan is installed automatically as a Prophet dependency.
