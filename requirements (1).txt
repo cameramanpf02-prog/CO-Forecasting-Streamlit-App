@@ -1,0 +1,36 @@
+# CO₂ Emission Forecasting — Thailand 3 Sectors
+# Streamlit Academic Conference App
+# Requirements — tested Python 3.10+
+
+# ── Web Framework ──────────────────────────────────────────────────────────
+streamlit>=1.32.0
+
+# ── Data & Computation ─────────────────────────────────────────────────────
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0          # Read EPPO .xlsx files
+
+# ── Time Series Models ─────────────────────────────────────────────────────
+statsmodels>=0.14.0       # ARIMA, SARIMAX, ETS (ExponentialSmoothing)
+pmdarima>=2.0.0           # auto_arima — automatic order selection (BIC)
+prophet>=1.1.5            # Meta's Prophet model (requires pystan)
+
+# ── Machine Learning ───────────────────────────────────────────────────────
+scikit-learn>=1.3.0       # Ridge regression, StandardScaler, metrics
+
+# ── Visualization ──────────────────────────────────────────────────────────
+plotly>=5.18.0            # Interactive charts (Scatter, Bar, Radar, Subplots)
+
+# ── Optional: faster Prophet build ─────────────────────────────────────────
+# cmdstanpy>=1.2.0        # Alternative Stan backend for Prophet (optional)
+
+# ── Notes ──────────────────────────────────────────────────────────────────
+# Prophet requires a C++ compiler for pystan.
+# On Ubuntu/Debian: sudo apt-get install build-essential
+# On macOS:        xcode-select --install
+# On Windows:      install Visual Studio Build Tools
+#
+# If Prophet installation fails, install via conda:
+#   conda install -c conda-forge prophet
+#
+# pystan is installed automatically as a Prophet dependency.
