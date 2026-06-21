@@ -515,23 +515,69 @@ def build_metrics_radar(results_list):
     )
     return fig
 
+def normalize_model_name(raw_name):
+    """Map raw model label (e.g. 'ARIMA(1,1,0)', 'Hybrid1(SARIMAX+Ridge)') → short key"""
+    MODEL_ORDER = ['Hybrid3', 'Hybrid2', 'Hybrid1', 'SARIMAX', 'Prophet', 'ETS', 'ARIMA']
+    for key in MODEL_ORDER:
+        if key in raw_name:
+            return key
+    return raw_name
+
+MODEL_DISPLAY = {
+    'ARIMA'  : 'ARIMA',
+    'SARIMAX': 'SARIMAX\n+COVID',
+    'ETS'    : 'ETS',
+    'Prophet': 'Prophet',
+    'Hybrid1': 'Hybrid1\nSARIMAX+Ridge',
+    'Hybrid2': 'Hybrid2\nETS+Ridge',
+    'Hybrid3': 'Hybrid3\nSARIMAX+Prophet',
+}
+MODEL_XORDER = ['ARIMA','SARIMAX','ETS','Prophet','Hybrid1','Hybrid2','Hybrid3']
+
 def build_mape_bar(results_all):
-    """Bar chart comparing MAPE across all models and sectors"""
+    """Bar chart comparing MAPE across all models and sectors — grouped by model"""
     rows = []
     for sector, results in results_all.items():
         for r in results:
-            rows.append({'Sector': sector, 'Model': r['Model'], 'MAPE': r['MAPE']})
+            model_key = normalize_model_name(r['Model'])
+            rows.append({
+                'Sector'   : sector,
+                'ModelKey' : model_key,
+                'Model'    : MODEL_DISPLAY.get(model_key, model_key),
+                'MAPE'     : r['MAPE'],
+            })
     df = pd.DataFrame(rows)
 
-    fig = px.bar(df, x='Model', y='MAPE', color='Sector', barmode='group',
-                 color_discrete_map=COLORS,
-                 labels={'MAPE': 'MAPE (%)', 'Model': ''},
-                 title='<b>Model MAPE Comparison — All Sectors</b>')
-    fig.update_layout(height=380, plot_bgcolor='white', paper_bgcolor='white',
-                      legend=dict(orientation='h', y=1.05),
-                      yaxis=dict(gridcolor='#f0f0f0'),
-                      margin=dict(l=50,r=20,t=60,b=100))
-    fig.update_xaxes(tickangle=-35)
+    fig = go.Figure()
+    sector_colors = {'Power': COLORS['Power'], 'Transport': COLORS['Transport'], 'Industry': COLORS['Industry']}
+
+    for sector, sc in sector_colors.items():
+        df_s = df[df['Sector'] == sector].copy()
+        # ensure all models present in right order
+        df_s = df_s.set_index('ModelKey').reindex(MODEL_XORDER).reset_index()
+        fig.add_trace(go.Bar(
+            name=sector,
+            x=[MODEL_DISPLAY.get(k, k) for k in MODEL_XORDER],
+            y=df_s['MAPE'].values,
+            marker_color=sc,
+            text=[f"{v:.2f}%" if not np.isnan(v) else '' for v in df_s['MAPE'].values],
+            textposition='outside',
+            textfont=dict(size=9),
+            hovertemplate=f'<b>{sector}</b><br>%{{x}}<br>MAPE: %{{y:.2f}}%<extra></extra>',
+        ))
+
+    fig.update_layout(
+        title=dict(text='<b>Model MAPE Comparison — All Sectors</b>',
+                   font=dict(size=14, color='#0d2137')),
+        barmode='group',
+        height=400,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        legend=dict(orientation='h', y=1.05, x=0),
+        yaxis=dict(title='MAPE (%)', gridcolor='#f0f0f0', tickformat='.1f'),
+        xaxis=dict(title='', tickangle=-20),
+        margin=dict(l=50, r=20, t=70, b=80),
+    )
     return fig
 
 def build_pvalue_chart(pvalues, sector_name):
@@ -1161,12 +1207,16 @@ with tab_metrics:
     for col, (sector_name, results) in zip(cols, ALL_RESULTS.items()):
         with col:
             st.markdown(f"**{sector_name} Sector**")
-            df_r = pd.DataFrame(results)[['Model','MAE','RMSE','MAPE']].round(2)
+            df_r = pd.DataFrame(results)[['Model','MAE','RMSE','MAPE']].copy()
+            # Normalize model name for display
+            df_r['Model'] = df_r['Model'].apply(
+                lambda m: MODEL_DISPLAY.get(normalize_model_name(m), m))
+            df_r[['MAE','RMSE','MAPE']] = df_r[['MAE','RMSE','MAPE']].round(2)
             best = SECTOR_BEST[sector_name]
-            # Highlight best
+            best_display = MODEL_DISPLAY.get(best, best)
             def highlight_best(row):
                 return ['background-color: #d5f5e3; font-weight:bold'
-                        if best in row['Model'] else '' for _ in row]
+                        if row['Model'] == best_display else '' for _ in row]
             st.dataframe(df_r.style.apply(highlight_best, axis=1), hide_index=True, use_container_width=True)
             st.plotly_chart(build_metrics_radar(results), use_container_width=True)
 
