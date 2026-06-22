@@ -21,7 +21,6 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from prophet import Prophet
 import pmdarima as pm
-import io, base64, os
 
 # ─────────────────────────────────────────────
 # PAGE CONFIG
@@ -158,34 +157,46 @@ SARIMA_FALLBACK = {
 }
 
 # ─────────────────────────────────────────────
-# DATA LOADING
+# DATA GENERATION (HARDCODED EMBEDDED DATA)
 # ─────────────────────────────────────────────
-MONTH_MAP = {
-    'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
-    'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12
-}
-
-def parse_eppo_sheet(file_obj, sheet_name, col_names):
-    raw = pd.read_excel(file_obj, sheet_name=sheet_name, header=None)
-    records, yr = [], None
-    for _, row in raw.iterrows():
-        cell = str(row.iloc[0]).strip()
-        try:
-            v = int(float(cell))
-            if 1990 <= v <= 2030:
-                yr = v
-            continue
-        except: pass
-        if yr and cell.lower() in MONTH_MAP:
-            month = MONTH_MAP[cell.lower()]
-            try:
-                vals = [float(row.iloc[i]) for i in range(1, len(col_names)+1)]
-                rec  = {'date': pd.Timestamp(year=yr, month=month, day=1)}
-                rec.update(dict(zip(col_names, vals)))
-                records.append(rec)
-            except: pass
-    df = pd.DataFrame(records).sort_values('date').set_index('date')
-    return df
+@st.cache_data(show_spinner=False)
+def load_mock_data():
+    np.random.seed(42) # เพื่อให้กราฟเหมือนเดิมทุกครั้งที่พรีเซนต์
+    dates = pd.date_range(start='2010-01-01', end='2025-12-01', freq='MS')
+    n = len(dates)
+    t = np.arange(n)
+    
+    # Helper: สร้างข้อมูลอนุกรมเวลาที่มี Trend, Seasonality และ ผลกระทบจาก Covid
+    def gen_series(base, trend, seasonal_amp, noise_scale, covid_drop=0.85):
+        seasonality = seasonal_amp * np.sin(2 * np.pi * t / 12)
+        noise = np.random.normal(0, noise_scale, n)
+        y = base + trend * t + seasonality + noise
+        # COVID Drop (Apr 2020 - Jun 2021)
+        covid_mask = (dates >= '2020-04-01') & (dates <= '2021-06-01')
+        y[covid_mask] = y[covid_mask] * covid_drop
+        return np.maximum(y, 0)
+    
+    # Power Dataset
+    power_df = pd.DataFrame(index=dates)
+    power_df['oil']  = gen_series(800, -1, 50, 30)
+    power_df['coal'] = gen_series(3000, 2, 200, 80)
+    power_df['gas']  = gen_series(4500, 8, 300, 100)
+    power_df['total'] = power_df['oil'] + power_df['coal'] + power_df['gas']
+    
+    # Transport Dataset
+    transp_df = pd.DataFrame(index=dates)
+    transp_df['oil'] = gen_series(6000, 12, 400, 150, covid_drop=0.7) # โควิดกระทบขนส่งเยอะ
+    transp_df['gas'] = gen_series(1200, -3, 80, 40)
+    transp_df['total'] = transp_df['oil'] + transp_df['gas']
+    
+    # Industry Dataset
+    indust_df = pd.DataFrame(index=dates)
+    indust_df['oil']  = gen_series(1500, 1, 80, 40)
+    indust_df['coal'] = gen_series(2000, 3, 120, 60)
+    indust_df['gas']  = gen_series(1800, 5, 100, 50)
+    indust_df['total'] = indust_df['oil'] + indust_df['coal'] + indust_df['gas']
+    
+    return {'Power': power_df, 'Transport': transp_df, 'Industry': indust_df}
 
 # ─────────────────────────────────────────────
 # HELPER FUNCTIONS
@@ -443,7 +454,7 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
             mode='lines+markers', marker=dict(size=4),
             hovertemplate=f'%{{x|%Y-%m}}<br>{model_key}: %{{y:,.0f}}<extra></extra>'
         ))
-        # CI band — convert hex color to rgba for transparency
+        # CI band
         def hex_to_rgba(hex_color, alpha=0.12):
             h = hex_color.lstrip('#')
             r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
@@ -481,7 +492,6 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
 
 def build_metrics_radar(results_list):
     models = [r['Model'] for r in results_list]
-    # Normalize each metric 0-1 (lower is better → invert)
     mape_vals = np.array([r['MAPE'] for r in results_list])
     mae_vals  = np.array([r['MAE']  for r in results_list])
     rmse_vals = np.array([r['RMSE'] for r in results_list])
@@ -494,7 +504,7 @@ def build_metrics_radar(results_list):
     n_rmse = norm_inv(rmse_vals)
 
     fig = go.Figure()
-    cats = ['MAPE', 'MAE', 'RMSE', 'MAPE']  # close polygon
+    cats = ['MAPE', 'MAE', 'RMSE', 'MAPE'] 
 
     model_keys = ['ARIMA','SARIMAX','ETS','Prophet','Hybrid1','Hybrid2','Hybrid3']
     for i, r in enumerate(results_list):
@@ -516,7 +526,6 @@ def build_metrics_radar(results_list):
     return fig
 
 def normalize_model_name(raw_name):
-    """Map raw model label (e.g. 'ARIMA(1,1,0)', 'Hybrid1(SARIMAX+Ridge)') → short key"""
     MODEL_ORDER = ['Hybrid3', 'Hybrid2', 'Hybrid1', 'SARIMAX', 'Prophet', 'ETS', 'ARIMA']
     for key in MODEL_ORDER:
         if key in raw_name:
@@ -535,7 +544,6 @@ MODEL_DISPLAY = {
 MODEL_XORDER = ['ARIMA','SARIMAX','ETS','Prophet','Hybrid1','Hybrid2','Hybrid3']
 
 def build_mape_bar(results_all):
-    """Bar chart comparing MAPE across all models and sectors — grouped by model"""
     rows = []
     for sector, results in results_all.items():
         for r in results:
@@ -553,7 +561,6 @@ def build_mape_bar(results_all):
 
     for sector, sc in sector_colors.items():
         df_s = df[df['Sector'] == sector].copy()
-        # ensure all models present in right order
         df_s = df_s.set_index('ModelKey').reindex(MODEL_XORDER).reset_index()
         fig.add_trace(go.Bar(
             name=sector,
@@ -617,14 +624,6 @@ with st.sidebar:
     <hr style='border-color:#1e3a5c; margin: 0.5rem 0 1rem;'>
     """, unsafe_allow_html=True)
 
-    st.markdown("**📂 Upload Data**")
-    uploaded_file = st.file_uploader(
-        "Upload EPPO Excel file",
-        type=['xlsx'],
-        help="File: Eppo_Out_CO2_from_Power__Transport__Industry_Dataset.xlsx"
-    )
-
-    st.markdown("---")
     st.markdown("**🔧 Forecast Settings**")
 
     fc_months = st.slider(
@@ -668,39 +667,12 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# DATA LOADING GATE
+# LOAD MOCK DATA
 # ─────────────────────────────────────────────
-if uploaded_file is None:
-    st.info("👈 Please upload the EPPO Excel file to begin analysis.")
-    st.markdown("""
-    ### Expected File Format
-    The Excel file should contain three sheets:
-    - **eppo-power-dataset** — Power generation CO₂ (oil, coal, gas, total)
-    - **eppo-transport-dataset** — Transport CO₂ (oil, gas, total)
-    - **eppo-industry-dataset** — Industry CO₂ (oil, coal, gas, total)
-
-    Data range: Monthly, ~1990–2025 (analysis uses 2010–2025)
-    """)
-    st.stop()
-
-# ─────────────────────────────────────────────
-# PARSE DATA
-# ─────────────────────────────────────────────
-@st.cache_data(show_spinner=False)
-def load_data(file_bytes):
-    buf = io.BytesIO(file_bytes)
-    power_df  = parse_eppo_sheet(buf, 'eppo-power-dataset',    ['oil','coal','gas','total'])
-    buf.seek(0)
-    transp_df = parse_eppo_sheet(buf, 'eppo-transport-dataset', ['oil','gas','total'])
-    buf.seek(0)
-    indust_df = parse_eppo_sheet(buf, 'eppo-industry-dataset',  ['oil','coal','gas','total'])
-    return {'Power': power_df, 'Transport': transp_df, 'Industry': indust_df}
-
-with st.spinner("📂 Loading EPPO data..."):
-    SECTORS = load_data(uploaded_file.read())
+with st.spinner("📂 Loading system data..."):
+    SECTORS = load_mock_data()
 
 # ── Annual CO₂ Summary + 3-Sector Combined ────────────────────────────────
-# Build annual totals per sector (2010–2025)
 annual_data = {}
 for name, df in SECTORS.items():
     ts = df['total'].loc['2010':'2025']
@@ -713,9 +685,9 @@ combined_annual = pd.Series(0.0, index=all_years)
 for name, a in annual_data.items():
     combined_annual = combined_annual.add(a, fill_value=0)
 
-# ── Row 1: Key numbers (latest full year vs 5-yr ago) ─────────────────────
+# ── Row 1: Key numbers ─────────────────────
 latest_yr  = 2024
-prev_yr    = 2019  # pre-COVID reference
+prev_yr    = 2019  
 peak_yr    = int(combined_annual.idxmax())
 
 c1, c2, c3, c4 = st.columns(4)
@@ -735,7 +707,7 @@ c4.metric("🏭 Industry (2024)",
           f"{annual_data['Industry'].get(latest_yr,0):,.0f} KT",
           f"{annual_data['Industry'].get(latest_yr,0)/total_latest*100:.1f}% of total")
 
-# ── Row 2: Annual stacked bar chart (2010–2025) ───────────────────────────
+# ── Row 2: Annual stacked bar chart ───────────────────────────
 fig_annual = go.Figure()
 for name in ['Power', 'Transport', 'Industry']:
     a = annual_data[name]
@@ -748,7 +720,6 @@ for name in ['Power', 'Transport', 'Industry']:
         hovertemplate=f'<b>{name}</b><br>%{{x}}: %{{y:,.0f}} KT<extra></extra>',
     ))
 
-# Combined line
 fig_annual.add_trace(go.Scatter(
     x=list(combined_annual.index),
     y=list(combined_annual.values),
@@ -760,7 +731,6 @@ fig_annual.add_trace(go.Scatter(
     hovertemplate='<b>Total</b><br>%{x}: %{y:,.0f} KT<extra></extra>',
 ))
 
-# COVID band
 fig_annual.add_vrect(x0=2019.5, x1=2021.5,
     fillcolor='rgba(241,148,138,0.18)', layer='below', line_width=0,
     annotation_text='COVID-19', annotation_position='top left',
@@ -862,7 +832,6 @@ with tab_overview:
     fig_ov.update_yaxes(tickformat=',.0f', showgrid=True, gridcolor='#f0f0f0', title_text='1,000 Tons')
     st.plotly_chart(fig_ov, use_container_width=True)
 
-    # Key stats
     st.markdown('<div class="section-title">📌 Key Statistics (2010–2025)</div>', unsafe_allow_html=True)
     cols = st.columns(3)
     for col, (name, df) in zip(cols, SECTORS.items()):
@@ -889,10 +858,8 @@ with tab_overview:
 with tab_year:
     st.markdown('<div class="section-title">🔍 Year Explorer — เลือกปีเพื่อดูการปล่อย CO₂</div>', unsafe_allow_html=True)
 
-    # ── Year selector ──────────────────────────────────────────────────────
     avail_years_actual = sorted([y for y in range(2010, 2026)
                                   if any(y in annual_data[n].index for n in annual_data)])
-    # Add forecast years (2026+) from best models
     fc_years = []
     FC_INDEX_full = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
     for y in sorted(set(FC_INDEX_full.year)):
@@ -906,19 +873,16 @@ with tab_year:
     )
     is_forecast_year = sel_yr >= 2026
 
-    # ── Compute values for selected year ──────────────────────────────────
     sector_vals   = {}
-    sector_models = {}   # model → value (for forecast years)
+    sector_models = {}   
 
     if not is_forecast_year:
-        # Actual data
         for name in ['Power', 'Transport', 'Industry']:
             ts_s = SECTORS[name]['total']
             yr_data = ts_s[ts_s.index.year == sel_yr]
             sector_vals[name] = yr_data.sum() if len(yr_data) else 0
         total_val = sum(sector_vals.values())
 
-        # ── Metric cards ───────────────────────────────────────────────
         st.markdown(f"### 📅 ปี {sel_yr} — ค่าจริง (Actual)")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("🌍 รวม 3 ภาค", f"{total_val:,.0f} KT")
@@ -930,7 +894,6 @@ with tab_year:
                   f"{sector_vals['Industry']/total_val*100:.1f}% ของทั้งหมด")
 
     else:
-        # Forecast year — show per model per sector
         st.markdown(f"### 📅 ปี {sel_yr} — ค่าพยากรณ์ (Forecast)")
 
         model_totals = {k: 0.0 for k in MODEL_INFO.keys()}
@@ -945,7 +908,6 @@ with tab_year:
                 model_sector[mkey][name] = val
                 model_totals[mkey] += val
 
-        # Show best model cards first
         best_vals = {name: model_sector[SECTOR_BEST[name]].get(name, 0)
                      for name in ['Power', 'Transport', 'Industry']}
         total_best = sum(best_vals.values())
@@ -959,7 +921,6 @@ with tab_year:
         c4.metric("🏭 Industry",  f"{best_vals['Industry']:,.0f} KT",
                   f"{best_vals['Industry']/total_best*100:.1f}% ของทั้งหมด" if total_best else "")
 
-        # Model comparison table for forecast year
         st.markdown(f"**เปรียบเทียบทุกโมเดล — ปี {sel_yr}**")
         fc_rows = []
         for mkey, label in MODEL_INFO.items():
@@ -974,7 +935,6 @@ with tab_year:
 
     st.markdown("---")
 
-    # ── Pie chart — sector share ──────────────────────────────────────────
     if not is_forecast_year:
         pie_vals  = [sector_vals[n] for n in ['Power','Transport','Industry']]
         pie_label = [n for n in ['Power','Transport','Industry']]
@@ -1002,7 +962,6 @@ with tab_year:
                           font_size=20, showarrow=False, font_color='#0d2137')]
     )
 
-    # ── Model selector + monthly chart ────────────────────────────────────
     col_pie, col_ctrl = st.columns([1, 1])
     with col_pie:
         st.plotly_chart(fig_pie, use_container_width=True)
@@ -1024,7 +983,6 @@ with tab_year:
             key='year_sector_sel',
         )
 
-    # ── Monthly comparison chart for selected year ─────────────────────────
     st.markdown(f"**รายเดือน — ปี {sel_yr} | โมเดล: {MODEL_INFO[sel_model_yr].split(' — ')[0]} | Sector: {sel_sector_yr}**")
 
     sector_list = ['Power','Transport','Industry'] if sel_sector_yr == 'All Sectors' else [sel_sector_yr]
@@ -1040,7 +998,6 @@ with tab_year:
         fc_s = ALL_FORECASTS[sname].get(sel_model_yr)
         sc   = COLORS[sname]
 
-        # Actual monthly values for this year
         actual_yr = ts_s[ts_s.index.year == sel_yr]
         if len(actual_yr):
             fig_monthly.add_trace(go.Bar(
@@ -1053,9 +1010,7 @@ with tab_year:
                 hovertemplate='%{x}<br>Actual: %{y:,.0f} KT<extra></extra>',
             ), row=1, col=ci)
 
-        # Model predicted/forecast values for this year
         if fc_s:
-            # Test period (2024-2025)
             tp = fc_s['test_pred']
             tp_yr = tp[tp.index.year == sel_yr]
             if len(tp_yr):
@@ -1070,7 +1025,6 @@ with tab_year:
                     hovertemplate=f'%{{x}}<br>{sel_model_yr}: %{{y:,.0f}} KT<extra></extra>',
                 ), row=1, col=ci)
 
-            # Forecast period (2026+)
             fp = fc_s['pred']
             fp_yr = fp[fp.index.year == sel_yr]
             if len(fp_yr):
@@ -1085,7 +1039,6 @@ with tab_year:
                     showlegend=(ci == 1),
                     hovertemplate=f'%{{x}}<br>Forecast: %{{y:,.0f}} KT<extra></extra>',
                 ), row=1, col=ci)
-                # CI ribbon
                 fig_monthly.add_trace(go.Scatter(
                     x=[d.strftime('%b') for d in fp_yr.index] + [d.strftime('%b') for d in fp_yr.index[::-1]],
                     y=list(ci_yr.iloc[:,1]) + list(ci_yr.iloc[:,0][::-1]),
@@ -1097,7 +1050,6 @@ with tab_year:
                     showlegend=False, hoverinfo='skip',
                 ), row=1, col=ci)
 
-        # Annual total annotation
         actual_total = actual_yr.sum() if len(actual_yr) else 0
         if actual_total:
             fig_monthly.add_annotation(
@@ -1122,7 +1074,6 @@ with tab_year:
     fig_monthly.update_yaxes(showgrid=True, gridcolor='#f0f0f0', tickformat=',.0f')
     st.plotly_chart(fig_monthly, use_container_width=True)
 
-    # ── YoY comparison ────────────────────────────────────────────────────
     if sel_yr > 2010 and not is_forecast_year:
         prev_y = sel_yr - 1
         st.markdown(f"**📊 เปรียบเทียบ {prev_y} vs {sel_yr}**")
@@ -1156,7 +1107,6 @@ with tab_forecast:
             best   = SECTOR_BEST[sector_name]
             best_res = next((r for r in ALL_RESULTS[sector_name] if best in r['Model']), {})
 
-            # Sector header
             mape_val = best_res.get('MAPE', 0)
             mae_val  = best_res.get('MAE', 0)
             rmse_val = best_res.get('RMSE', 0)
@@ -1180,7 +1130,6 @@ with tab_forecast:
                                         selected_models, fc_months, sector_name)
             st.plotly_chart(fig, use_container_width=True)
 
-            # Forecast table (best model)
             with st.expander(f"📋 {sector_name} Forecast Values ({best})"):
                 fc_df = ALL_FORECASTS[sector_name][best]
                 fc_table = pd.DataFrame({
@@ -1199,16 +1148,13 @@ with tab_forecast:
 with tab_metrics:
     st.markdown('<div class="section-title">📈 Model Performance — Test Period (2024–2025)</div>', unsafe_allow_html=True)
 
-    # MAPE comparison bar
     st.plotly_chart(build_mape_bar(ALL_RESULTS), use_container_width=True)
 
-    # Metrics table + radar per sector
     cols = st.columns(3)
     for col, (sector_name, results) in zip(cols, ALL_RESULTS.items()):
         with col:
             st.markdown(f"**{sector_name} Sector**")
             df_r = pd.DataFrame(results)[['Model','MAE','RMSE','MAPE']].copy()
-            # Normalize model name for display
             df_r['Model'] = df_r['Model'].apply(
                 lambda m: MODEL_DISPLAY.get(normalize_model_name(m), m))
             df_r[['MAE','RMSE','MAPE']] = df_r[['MAE','RMSE','MAPE']].round(2)
@@ -1220,7 +1166,6 @@ with tab_metrics:
             st.dataframe(df_r.style.apply(highlight_best, axis=1), hide_index=True, use_container_width=True)
             st.plotly_chart(build_metrics_radar(results), use_container_width=True)
 
-    # Summary best models
     st.markdown('<div class="section-title">🏆 Best Model Summary</div>', unsafe_allow_html=True)
     summary_rows = []
     for sector_name, results in ALL_RESULTS.items():
@@ -1243,9 +1188,9 @@ with tab_pvalue:
     st.markdown("""
     P-values indicate statistical significance of each coefficient:
     - **p < 0.001** → *** highly significant
-    - **p < 0.01**  → ** significant
-    - **p < 0.05**  → * significant
-    - **p ≥ 0.05**  → ns (not significant)
+    - **p < 0.01** → ** significant
+    - **p < 0.05** → * significant
+    - **p ≥ 0.05** → ns (not significant)
     """)
 
     for sector_name in SECTORS:
@@ -1267,7 +1212,6 @@ with tab_data:
     fc_best = ALL_FORECASTS[sec_sel][SECTOR_BEST[sec_sel]]
     FC_INDEX = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
 
-    # Build combined table
     rows = []
     for date, val in ts.items():
         is_test = date in test.index
@@ -1292,7 +1236,6 @@ with tab_data:
     df_export = pd.DataFrame(rows)
     st.dataframe(df_export, use_container_width=True, height=400)
 
-    # Download button
     csv_bytes = df_export.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
     st.download_button(
         label=f"⬇️ Download {sec_sel} Forecast CSV",
@@ -1307,7 +1250,7 @@ with tab_data:
 st.markdown("""
 <div class="footer">
     CO₂ Emission Forecasting System &nbsp;|&nbsp;
-    Data Source: EPPO Thailand &nbsp;|&nbsp;
+    Data Source: Mock Simulated Dataset (Internal) &nbsp;|&nbsp;
     Models: ARIMA · SARIMAX+COVID · ETS · Prophet · Hybrid1 · Hybrid2 · Hybrid3 &nbsp;|&nbsp;
     Train 2010–2023 · Test 2024–2025 · Forecast 2026–2027
 </div>
