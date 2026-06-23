@@ -7,6 +7,8 @@ Academic Conference Presentation App
 import warnings
 warnings.filterwarnings('ignore')
 
+import io
+import os
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -41,7 +43,6 @@ st.markdown("""
 
 html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
-/* Header banner */
 .main-header {
     background: linear-gradient(135deg, #0d2137 0%, #1a3a5c 50%, #0d2137 100%);
     padding: 2rem 2.5rem;
@@ -52,7 +53,6 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 .main-header h1 { color: #ffffff; font-size: 2rem; font-weight: 700; margin: 0; }
 .main-header p  { color: #a8d8ea; margin: 0.3rem 0 0; font-size: 0.95rem; }
 
-/* Sector cards */
 .sector-card {
     background: linear-gradient(135deg, #f8fbff, #eef4fd);
     border: 1px solid #d0e4f7;
@@ -62,46 +62,34 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     margin-bottom: 0.8rem;
 }
 
-/* Metric boxes */
-.metric-row {
-    display: flex; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem;
-}
+.metric-row { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-bottom: 1rem; }
 .metric-box {
-    background: white;
-    border: 1px solid #e2ecf9;
-    border-radius: 8px;
-    padding: 0.7rem 1rem;
-    flex: 1; min-width: 110px;
-    text-align: center;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+    background: white; border: 1px solid #e2ecf9; border-radius: 8px;
+    padding: 0.7rem 1rem; flex: 1; min-width: 110px;
+    text-align: center; box-shadow: 0 1px 4px rgba(0,0,0,0.06);
 }
 .metric-box .label { font-size: 0.72rem; color: #6b7a8d; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
 .metric-box .value { font-size: 1.35rem; font-weight: 700; color: #1a3a5c; }
 .metric-box .unit  { font-size: 0.7rem; color: #8a97a8; }
 
-/* Section titles */
 .section-title {
     font-size: 1.15rem; font-weight: 700; color: #0d2137;
     border-bottom: 2px solid #00c896;
     padding-bottom: 0.3rem; margin: 1.2rem 0 0.8rem;
 }
 
-/* Sidebar */
 section[data-testid="stSidebar"] { background: #0d2137; }
 section[data-testid="stSidebar"] * { color: #d0e8f7 !important; }
 section[data-testid="stSidebar"] .stSelectbox label,
 section[data-testid="stSidebar"] .stSlider label { color: #a8d8ea !important; font-weight: 600; }
 
-/* Best model badge */
 .best-badge {
-    display: inline-block;
-    background: #00c896; color: white;
+    display: inline-block; background: #00c896; color: white;
     font-size: 0.72rem; font-weight: 700;
     padding: 2px 8px; border-radius: 20px;
     margin-left: 6px; vertical-align: middle;
 }
 
-/* Footer */
 .footer {
     text-align: center; color: #8a97a8;
     font-size: 0.78rem; margin-top: 2rem;
@@ -144,7 +132,7 @@ MODEL_INFO = {
     'ARIMA'  : 'ARIMA — Baseline non-seasonal time series',
     'SARIMAX': 'SARIMAX+COVID — Seasonal with COVID-19 dummy variable',
     'ETS'    : 'ETS — Exponential Smoothing (Holt-Winters)',
-    'Prophet': 'Prophet — Meta\'s decomposition-based forecasting',
+    'Prophet': "Prophet — Meta's decomposition-based forecasting",
     'Hybrid1': 'Hybrid 1 — SARIMAX + Ridge Regression',
     'Hybrid2': 'Hybrid 2 — ETS + Ridge Regression',
     'Hybrid3': 'Hybrid 3 — SARIMAX + Prophet Ensemble',
@@ -157,45 +145,47 @@ SARIMA_FALLBACK = {
 }
 
 # ─────────────────────────────────────────────
-# DATA GENERATION (HARDCODED EMBEDDED DATA)
+# DATA LOADING — อ่านจาก Excel จริง (EPPO)
 # ─────────────────────────────────────────────
+MONTH_MAP = {
+    'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
+    'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12
+}
+
+def parse_eppo_sheet(file_obj, sheet_name, col_names):
+    """แปลง sheet EPPO ที่มีโครงสร้างปี/เดือนเป็น DataFrame รายเดือน"""
+    raw = pd.read_excel(file_obj, sheet_name=sheet_name, header=None)
+    records, yr = [], None
+    for _, row in raw.iterrows():
+        cell = str(row.iloc[0]).strip()
+        try:
+            v = int(float(cell))
+            if 1990 <= v <= 2030:
+                yr = v
+            continue
+        except:
+            pass
+        if yr and cell.lower() in MONTH_MAP:
+            month = MONTH_MAP[cell.lower()]
+            try:
+                vals = [float(row.iloc[i]) for i in range(1, len(col_names)+1)]
+                rec  = {'date': pd.Timestamp(year=yr, month=month, day=1)}
+                rec.update(dict(zip(col_names, vals)))
+                records.append(rec)
+            except:
+                pass
+    df = pd.DataFrame(records).sort_values('date').set_index('date')
+    return df
+
 @st.cache_data(show_spinner=False)
-def load_mock_data():
-    np.random.seed(42) # เพื่อให้กราฟเหมือนเดิมทุกครั้งที่พรีเซนต์
-    dates = pd.date_range(start='2010-01-01', end='2025-12-01', freq='MS')
-    n = len(dates)
-    t = np.arange(n)
-    
-    # Helper: สร้างข้อมูลอนุกรมเวลาที่มี Trend, Seasonality และ ผลกระทบจาก Covid
-    def gen_series(base, trend, seasonal_amp, noise_scale, covid_drop=0.85):
-        seasonality = seasonal_amp * np.sin(2 * np.pi * t / 12)
-        noise = np.random.normal(0, noise_scale, n)
-        y = base + trend * t + seasonality + noise
-        # COVID Drop (Apr 2020 - Jun 2021)
-        covid_mask = (dates >= '2020-04-01') & (dates <= '2021-06-01')
-        y[covid_mask] = y[covid_mask] * covid_drop
-        return np.maximum(y, 0)
-    
-    # Power Dataset
-    power_df = pd.DataFrame(index=dates)
-    power_df['oil']  = gen_series(800, -1, 50, 30)
-    power_df['coal'] = gen_series(3000, 2, 200, 80)
-    power_df['gas']  = gen_series(4500, 8, 300, 100)
-    power_df['total'] = power_df['oil'] + power_df['coal'] + power_df['gas']
-    
-    # Transport Dataset
-    transp_df = pd.DataFrame(index=dates)
-    transp_df['oil'] = gen_series(6000, 12, 400, 150, covid_drop=0.7) # โควิดกระทบขนส่งเยอะ
-    transp_df['gas'] = gen_series(1200, -3, 80, 40)
-    transp_df['total'] = transp_df['oil'] + transp_df['gas']
-    
-    # Industry Dataset
-    indust_df = pd.DataFrame(index=dates)
-    indust_df['oil']  = gen_series(1500, 1, 80, 40)
-    indust_df['coal'] = gen_series(2000, 3, 120, 60)
-    indust_df['gas']  = gen_series(1800, 5, 100, 50)
-    indust_df['total'] = indust_df['oil'] + indust_df['coal'] + indust_df['gas']
-    
+def load_data(file_bytes):
+    """โหลดข้อมูลจริงจาก EPPO Excel ทั้ง 3 sectors"""
+    buf = io.BytesIO(file_bytes)
+    power_df  = parse_eppo_sheet(buf, 'eppo-power-dataset',    ['oil','coal','gas','total'])
+    buf.seek(0)
+    transp_df = parse_eppo_sheet(buf, 'eppo-transport-dataset', ['oil','gas','total'])
+    buf.seek(0)
+    indust_df = parse_eppo_sheet(buf, 'eppo-industry-dataset',  ['oil','coal','gas','total'])
     return {'Power': power_df, 'Transport': transp_df, 'Industry': indust_df}
 
 # ─────────────────────────────────────────────
@@ -369,11 +359,9 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
     results['Hybrid3']   = calc_metrics(test, tp_h3, 'Hybrid3(SARIMAX+Prophet)')
     forecasts['Hybrid3'] = {'pred': fp_h3, 'ci': fi_h3, 'test_pred': tp_h3}
 
-    # Serialize for caching
     return _serialize_results(results, forecasts, FC_INDEX)
 
 def _serialize_results(results, forecasts, FC_INDEX):
-    """Convert pandas objects to JSON-safe dicts for st.cache_data"""
     ser_fc = {}
     for k, v in forecasts.items():
         ser_fc[k] = {
@@ -394,12 +382,10 @@ def _serialize_results(results, forecasts, FC_INDEX):
 def deserialize_forecasts(ser_fc):
     out = {}
     for k, v in ser_fc.items():
-        pred = pd.Series(v['pred_values'],
-                         index=pd.DatetimeIndex(v['pred_index']))
+        pred = pd.Series(v['pred_values'], index=pd.DatetimeIndex(v['pred_index']))
         ci   = pd.DataFrame({'lower': v['ci_lower'], 'upper': v['ci_upper']},
                             index=pd.DatetimeIndex(v['pred_index']))
-        tp   = pd.Series(v['test_pred_values'],
-                         index=pd.DatetimeIndex(v['test_pred_index']))
+        tp   = pd.Series(v['test_pred_values'], index=pd.DatetimeIndex(v['test_pred_index']))
         out[k] = {'pred': pred, 'ci': ci, 'test_pred': tp}
         if 'pvalues_p' in v:
             out[k]['pvalues'] = pd.DataFrame({
@@ -416,7 +402,6 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
     FC_INDEX = pd.date_range('2026-01-01', periods=fc_periods, freq='MS')
     fig = go.Figure()
 
-    # Background shading
     for start, end, color, label in [
         (train.index[0], train.index[-1], 'rgba(46,134,193,0.06)', 'Train 2010–2023'),
         (test.index[0],  test.index[-1],  'rgba(230,126,34,0.10)', 'Test 2024–2025'),
@@ -428,33 +413,29 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
                       annotation_text=label, annotation_position='top left',
                       annotation_font_size=9, annotation_font_color='#6b7a8d')
 
-    # Actual line
     fig.add_trace(go.Scatter(
         x=ts.loc[TRAIN_START:TEST_END].index, y=ts.loc[TRAIN_START:TEST_END].values,
         name='Actual', line=dict(color=COLORS['actual'], width=2.5),
         mode='lines', hovertemplate='%{x|%Y-%m}<br>Actual: %{y:,.0f}<extra></extra>'
     ))
 
-    # Models
     for model_key in selected_models:
         if model_key not in forecasts: continue
         fc  = forecasts[model_key]
         col = COLORS.get(model_key, '#888')
 
-        # Test prediction
         fig.add_trace(go.Scatter(
             x=fc['test_pred'].index, y=fc['test_pred'].values,
             name=f'{model_key} (test)', line=dict(color=col, width=1.6, dash='dot'),
             opacity=0.85, hovertemplate=f'%{{x|%Y-%m}}<br>{model_key} test: %{{y:,.0f}}<extra></extra>'
         ))
-        # Forecast
         fig.add_trace(go.Scatter(
             x=fc['pred'].index, y=fc['pred'].values,
             name=f'{model_key} forecast', line=dict(color=col, width=2.2),
             mode='lines+markers', marker=dict(size=4),
             hovertemplate=f'%{{x|%Y-%m}}<br>{model_key}: %{{y:,.0f}}<extra></extra>'
         ))
-        # CI band
+
         def hex_to_rgba(hex_color, alpha=0.12):
             h = hex_color.lstrip('#')
             r, g, b = int(h[0:2],16), int(h[2:4],16), int(h[4:6],16)
@@ -463,14 +444,11 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
         fig.add_trace(go.Scatter(
             x=list(fc['ci'].index) + list(fc['ci'].index[::-1]),
             y=list(fc['ci'].iloc[:,1]) + list(fc['ci'].iloc[:,0][::-1]),
-            fill='toself',
-            fillcolor=hex_to_rgba(col),
+            fill='toself', fillcolor=hex_to_rgba(col),
             line=dict(color='rgba(255,255,255,0)'),
-            name=f'{model_key} 95% CI', showlegend=False,
-            hoverinfo='skip'
+            name=f'{model_key} 95% CI', showlegend=False, hoverinfo='skip'
         ))
 
-    # Divider lines
     fig.add_vline(x=str(test.index[0]), line=dict(color='#aaa', dash='dash', width=1))
     fig.add_vline(x=str(FC_INDEX[0]),   line=dict(color='#aaa', dash='dash', width=1))
 
@@ -478,20 +456,15 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
         title=dict(text=f'<b>{sector_name} Sector — CO₂ Emission Forecast</b>',
                    font=dict(size=16, color='#0d2137')),
         xaxis=dict(title='Date', showgrid=True, gridcolor='#f0f0f0', tickformat='%Y'),
-        yaxis=dict(title='CO₂ Emission (1,000 Tons)', showgrid=True, gridcolor='#f0f0f0',
-                   tickformat=',.0f'),
+        yaxis=dict(title='CO₂ Emission (1,000 Tons)', showgrid=True, gridcolor='#f0f0f0', tickformat=',.0f'),
         hovermode='x unified',
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
-                    font=dict(size=10)),
-        height=420,
-        plot_bgcolor='white',
-        paper_bgcolor='white',
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, font=dict(size=10)),
+        height=420, plot_bgcolor='white', paper_bgcolor='white',
         margin=dict(l=60, r=20, t=70, b=50),
     )
     return fig
 
 def build_metrics_radar(results_list):
-    models = [r['Model'] for r in results_list]
     mape_vals = np.array([r['MAPE'] for r in results_list])
     mae_vals  = np.array([r['MAE']  for r in results_list])
     rmse_vals = np.array([r['RMSE'] for r in results_list])
@@ -504,8 +477,7 @@ def build_metrics_radar(results_list):
     n_rmse = norm_inv(rmse_vals)
 
     fig = go.Figure()
-    cats = ['MAPE', 'MAE', 'RMSE', 'MAPE'] 
-
+    cats = ['MAPE', 'MAE', 'RMSE', 'MAPE']
     model_keys = ['ARIMA','SARIMAX','ETS','Prophet','Hybrid1','Hybrid2','Hybrid3']
     for i, r in enumerate(results_list):
         key = [k for k in model_keys if k in r['Model']]
@@ -517,11 +489,9 @@ def build_metrics_radar(results_list):
 
     fig.update_layout(
         polar=dict(radialaxis=dict(visible=True, range=[0,1], tickfont=dict(size=8))),
-        showlegend=True,
-        height=340,
+        showlegend=True, height=340,
         margin=dict(l=30, r=30, t=30, b=30),
-        legend=dict(font=dict(size=9)),
-        paper_bgcolor='white',
+        legend=dict(font=dict(size=9)), paper_bgcolor='white',
     )
     return fig
 
@@ -548,17 +518,11 @@ def build_mape_bar(results_all):
     for sector, results in results_all.items():
         for r in results:
             model_key = normalize_model_name(r['Model'])
-            rows.append({
-                'Sector'   : sector,
-                'ModelKey' : model_key,
-                'Model'    : MODEL_DISPLAY.get(model_key, model_key),
-                'MAPE'     : r['MAPE'],
-            })
+            rows.append({'Sector': sector, 'ModelKey': model_key,
+                         'Model': MODEL_DISPLAY.get(model_key, model_key), 'MAPE': r['MAPE']})
     df = pd.DataFrame(rows)
-
     fig = go.Figure()
     sector_colors = {'Power': COLORS['Power'], 'Transport': COLORS['Transport'], 'Industry': COLORS['Industry']}
-
     for sector, sc in sector_colors.items():
         df_s = df[df['Sector'] == sector].copy()
         df_s = df_s.set_index('ModelKey').reindex(MODEL_XORDER).reset_index()
@@ -568,18 +532,12 @@ def build_mape_bar(results_all):
             y=df_s['MAPE'].values,
             marker_color=sc,
             text=[f"{v:.2f}%" if not np.isnan(v) else '' for v in df_s['MAPE'].values],
-            textposition='outside',
-            textfont=dict(size=9),
+            textposition='outside', textfont=dict(size=9),
             hovertemplate=f'<b>{sector}</b><br>%{{x}}<br>MAPE: %{{y:.2f}}%<extra></extra>',
         ))
-
     fig.update_layout(
-        title=dict(text='<b>Model MAPE Comparison — All Sectors</b>',
-                   font=dict(size=14, color='#0d2137')),
-        barmode='group',
-        height=400,
-        plot_bgcolor='white',
-        paper_bgcolor='white',
+        title=dict(text='<b>Model MAPE Comparison — All Sectors</b>', font=dict(size=14, color='#0d2137')),
+        barmode='group', height=400, plot_bgcolor='white', paper_bgcolor='white',
         legend=dict(orientation='h', y=1.05, x=0),
         yaxis=dict(title='MAPE (%)', gridcolor='#f0f0f0', tickformat='.1f'),
         xaxis=dict(title='', tickangle=-20),
@@ -592,10 +550,8 @@ def build_pvalue_chart(pvalues, sector_name):
     pvals  = pvalues['p-value'].tolist()
     cols   = ['#C0392B' if p < 0.05 else '#AEB6BF' for p in pvals]
     log_p  = [-np.log10(p + 1e-10) for p in pvals]
-
     fig = go.Figure(go.Bar(
-        y=params, x=log_p, orientation='h',
-        marker_color=cols,
+        y=params, x=log_p, orientation='h', marker_color=cols,
         text=[f'p={p:.3f} {s}' for p, s in zip(pvals, pvalues['sig'].tolist())],
         textposition='outside',
     ))
@@ -624,16 +580,17 @@ with st.sidebar:
     <hr style='border-color:#1e3a5c; margin: 0.5rem 0 1rem;'>
     """, unsafe_allow_html=True)
 
-    st.markdown("**🔧 Forecast Settings**")
-
-    fc_months = st.slider(
-        "Forecast Months", min_value=6, max_value=36,
-        value=24, step=6,
-        help="Number of months to forecast beyond 2025-12"
+    st.markdown("**📂 Upload Data**")
+    uploaded_file = st.file_uploader(
+        "Upload EPPO Excel file", type=['xlsx'],
+        help="File: Eppo_Out_CO2_from_Power__Transport__Industry_Dataset.xlsx"
     )
 
+    st.markdown("---")
+    st.markdown("**🔧 Forecast Settings**")
+    fc_months = st.slider("Forecast Months", min_value=6, max_value=36, value=24, step=6)
+
     st.markdown("**📊 Models to Display**")
-    all_model_keys = list(MODEL_INFO.keys())
     selected_models = []
     for k, label in MODEL_INFO.items():
         short = label.split(' — ')[0]
@@ -667,12 +624,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# LOAD MOCK DATA
+# DATA LOADING GATE
 # ─────────────────────────────────────────────
-with st.spinner("📂 Loading system data..."):
-    SECTORS = load_mock_data()
+if uploaded_file is None:
+    st.info("👈 Please upload the EPPO Excel file to begin analysis.")
+    st.markdown("""
+    ### Expected File
+    `Eppo_Out_CO2_from_Power__Transport__Industry_Dataset.xlsx`
 
-# ── Annual CO₂ Summary + 3-Sector Combined ────────────────────────────────
+    **Sheets required:**
+    - `eppo-power-dataset` — Power generation CO₂ (oil, coal, gas, total)
+    - `eppo-transport-dataset` — Transport CO₂ (oil, gas, total)
+    - `eppo-industry-dataset` — Industry CO₂ (oil, coal, gas, total)
+
+    Data range: Monthly ~1990–2025 (analysis uses 2010–2025)
+    """)
+    st.stop()
+
+# ─────────────────────────────────────────────
+# LOAD REAL DATA
+# ─────────────────────────────────────────────
+with st.spinner("📂 Loading EPPO data..."):
+    SECTORS = load_data(uploaded_file.read())
+
+# ── Annual CO₂ Summary ────────────────────────────────────────────────────
 annual_data = {}
 for name, df in SECTORS.items():
     ts = df['total'].loc['2010':'2025']
@@ -685,18 +660,17 @@ combined_annual = pd.Series(0.0, index=all_years)
 for name, a in annual_data.items():
     combined_annual = combined_annual.add(a, fill_value=0)
 
-# ── Row 1: Key numbers ─────────────────────
-latest_yr  = 2024
-prev_yr    = 2019  
-peak_yr    = int(combined_annual.idxmax())
+# ── Key numbers ───────────────────────────────────────────────────────────
+latest_yr = 2024
+prev_yr   = 2019
+peak_yr   = int(combined_annual.idxmax())
 
 c1, c2, c3, c4 = st.columns(4)
 total_latest = combined_annual.get(latest_yr, 0)
 total_prev   = combined_annual.get(prev_yr, 0)
 chg_pct      = (total_latest - total_prev) / total_prev * 100 if total_prev else 0
 
-c1.metric("🌍 Total CO₂ (2024)", f"{total_latest:,.0f} KT",
-          f"{chg_pct:+.1f}% vs {prev_yr}")
+c1.metric("🌍 Total CO₂ (2024)", f"{total_latest:,.0f} KT", f"{chg_pct:+.1f}% vs {prev_yr}")
 c2.metric("⚡ Power (2024)",
           f"{annual_data['Power'].get(latest_yr,0):,.0f} KT",
           f"{annual_data['Power'].get(latest_yr,0)/total_latest*100:.1f}% of total")
@@ -707,27 +681,21 @@ c4.metric("🏭 Industry (2024)",
           f"{annual_data['Industry'].get(latest_yr,0):,.0f} KT",
           f"{annual_data['Industry'].get(latest_yr,0)/total_latest*100:.1f}% of total")
 
-# ── Row 2: Annual stacked bar chart ───────────────────────────
+# ── Annual stacked bar chart ───────────────────────────────────────────────
 fig_annual = go.Figure()
 for name in ['Power', 'Transport', 'Industry']:
     a = annual_data[name]
     yrs = [y for y in all_years if y in a.index]
     fig_annual.add_trace(go.Bar(
-        x=yrs,
-        y=[a[y] for y in yrs],
-        name=name,
-        marker_color=COLORS[name],
+        x=yrs, y=[a[y] for y in yrs], name=name, marker_color=COLORS[name],
         hovertemplate=f'<b>{name}</b><br>%{{x}}: %{{y:,.0f}} KT<extra></extra>',
     ))
 
 fig_annual.add_trace(go.Scatter(
-    x=list(combined_annual.index),
-    y=list(combined_annual.values),
-    name='Total (3 Sectors)',
-    mode='lines+markers',
+    x=list(combined_annual.index), y=list(combined_annual.values),
+    name='Total (3 Sectors)', mode='lines+markers',
     line=dict(color='#1A252F', width=2.5, dash='dot'),
-    marker=dict(size=6, symbol='diamond'),
-    yaxis='y2',
+    marker=dict(size=6, symbol='diamond'), yaxis='y2',
     hovertemplate='<b>Total</b><br>%{x}: %{y:,.0f} KT<extra></extra>',
 ))
 
@@ -745,15 +713,12 @@ fig_annual.update_layout(
     yaxis2=dict(title='Total CO₂ (1,000 Tons)', overlaying='y', side='right',
                 showgrid=False, tickformat=',.0f'),
     legend=dict(orientation='h', y=1.05, x=0, font=dict(size=11)),
-    height=400,
-    plot_bgcolor='white',
-    paper_bgcolor='white',
-    margin=dict(l=60, r=80, t=70, b=60),
-    hovermode='x unified',
+    height=400, plot_bgcolor='white', paper_bgcolor='white',
+    margin=dict(l=60, r=80, t=70, b=60), hovermode='x unified',
 )
 st.plotly_chart(fig_annual, use_container_width=True)
 
-# ── Row 3: Period summary table ────────────────────────────────────────────
+# ── Period summary table ───────────────────────────────────────────────────
 period_rows = []
 for period, yr_range in [('Pre-COVID (2015–2019)', range(2015,2020)),
                           ('COVID (2020–2021)',      range(2020,2022)),
@@ -771,11 +736,10 @@ for period, yr_range in [('Pre-COVID (2015–2019)', range(2015,2020)),
 
 st.markdown("**📋 Average Annual CO₂ by Period**")
 st.dataframe(pd.DataFrame(period_rows), hide_index=True, use_container_width=True)
-
 st.markdown("---")
 
 # ─────────────────────────────────────────────
-# FIT ALL MODELS  (with progress)
+# FIT ALL MODELS
 # ─────────────────────────────────────────────
 ALL_RESULTS   = {}
 ALL_FORECASTS = {}
@@ -803,7 +767,8 @@ status_ph.empty()
 # TABS
 # ─────────────────────────────────────────────
 tab_overview, tab_year, tab_forecast, tab_metrics, tab_pvalue, tab_data = st.tabs([
-    "📊 Overview", "🔍 Year Explorer", "🔮 Forecast — All Sectors", "📈 Performance Metrics", "🔬 P-value Analysis", "📋 Data Table"
+    "📊 Overview", "🔍 Year Explorer", "🔮 Forecast — All Sectors",
+    "📈 Performance Metrics", "🔬 P-value Analysis", "📋 Data Table"
 ])
 
 # ═══════════════════════════
@@ -846,9 +811,7 @@ with tab_overview:
                     <div class="metric-box"><div class="label">Peak</div><div class="value">{ts.max():,.0f}</div><div class="unit">KT</div></div>
                     <div class="metric-box"><div class="label">Trend</div><div class="value">{trend:+.1f}%</div><div class="unit">total</div></div>
                 </div>
-                <div style="font-size:0.8rem;color:#566573">
-                Best model: <b>{SECTOR_BEST[name]}</b>
-                </div>
+                <div style="font-size:0.8rem;color:#566573">Best model: <b>{SECTOR_BEST[name]}</b></div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -860,21 +823,14 @@ with tab_year:
 
     avail_years_actual = sorted([y for y in range(2010, 2026)
                                   if any(y in annual_data[n].index for n in annual_data)])
-    fc_years = []
     FC_INDEX_full = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
-    for y in sorted(set(FC_INDEX_full.year)):
-        fc_years.append(y)
+    fc_years = sorted(set(FC_INDEX_full.year))
     all_selectable = avail_years_actual + fc_years
 
-    sel_yr = st.select_slider(
-        "เลือกปี",
-        options=all_selectable,
-        value=2024,
-    )
+    sel_yr = st.select_slider("เลือกปี", options=all_selectable, value=2024)
     is_forecast_year = sel_yr >= 2026
 
-    sector_vals   = {}
-    sector_models = {}   
+    sector_vals = {}
 
     if not is_forecast_year:
         for name in ['Power', 'Transport', 'Industry']:
@@ -892,10 +848,8 @@ with tab_year:
                   f"{sector_vals['Transport']/total_val*100:.1f}% ของทั้งหมด")
         c4.metric("🏭 Industry",  f"{sector_vals['Industry']:,.0f} KT",
                   f"{sector_vals['Industry']/total_val*100:.1f}% ของทั้งหมด")
-
     else:
         st.markdown(f"### 📅 ปี {sel_yr} — ค่าพยากรณ์ (Forecast)")
-
         model_totals = {k: 0.0 for k in MODEL_INFO.keys()}
         model_sector = {k: {} for k in MODEL_INFO.keys()}
 
@@ -937,14 +891,11 @@ with tab_year:
 
     if not is_forecast_year:
         pie_vals  = [sector_vals[n] for n in ['Power','Transport','Industry']]
-        pie_label = [n for n in ['Power','Transport','Industry']]
     else:
         pie_vals  = [best_vals[n] for n in ['Power','Transport','Industry']]
-        pie_label = ['Power','Transport','Industry']
 
     fig_pie = go.Figure(go.Pie(
-        labels=pie_label,
-        values=pie_vals,
+        labels=['Power','Transport','Industry'], values=pie_vals,
         marker=dict(colors=[COLORS['Power'], COLORS['Transport'], COLORS['Industry']],
                     line=dict(color='white', width=2)),
         textinfo='label+percent+value',
@@ -953,11 +904,8 @@ with tab_year:
         hovertemplate='<b>%{label}</b><br>%{value:,.0f} KT (%{percent})<extra></extra>',
     ))
     fig_pie.update_layout(
-        title=dict(text=f'<b>สัดส่วนการปล่อย CO₂ — ปี {sel_yr}</b>',
-                   font=dict(size=15, color='#0d2137')),
-        height=360,
-        paper_bgcolor='white',
-        margin=dict(l=20, r=20, t=60, b=20),
+        title=dict(text=f'<b>สัดส่วนการปล่อย CO₂ — ปี {sel_yr}</b>', font=dict(size=15, color='#0d2137')),
+        height=360, paper_bgcolor='white', margin=dict(l=20, r=20, t=60, b=20),
         annotations=[dict(text=f'<b>{sel_yr}</b>', x=0.5, y=0.5,
                           font_size=20, showarrow=False, font_color='#0d2137')]
     )
@@ -965,23 +913,18 @@ with tab_year:
     col_pie, col_ctrl = st.columns([1, 1])
     with col_pie:
         st.plotly_chart(fig_pie, use_container_width=True)
-
     with col_ctrl:
         st.markdown(f"**📈 เลือกโมเดลเพื่อเทียบกับค่าจริง — ปี {sel_yr}**")
         sel_model_yr = st.selectbox(
-            "เลือกโมเดล",
-            options=list(MODEL_INFO.keys()),
+            "เลือกโมเดล", options=list(MODEL_INFO.keys()),
             format_func=lambda k: MODEL_INFO[k].split(' — ')[0] +
                 (' ⭐ Best' if SECTOR_BEST.get(
-                    next((s for s in ['Power','Transport','Industry']
-                          if SECTOR_BEST[s]==k), None)) == k else ''),
+                    next((s for s in ['Power','Transport','Industry'] if SECTOR_BEST[s]==k), None)) == k else ''),
             key='year_model_sel',
         )
-        sel_sector_yr = st.selectbox(
-            "เลือก Sector",
-            options=['Power', 'Transport', 'Industry', 'All Sectors'],
-            key='year_sector_sel',
-        )
+        sel_sector_yr = st.selectbox("เลือก Sector",
+                                      options=['Power', 'Transport', 'Industry', 'All Sectors'],
+                                      key='year_sector_sel')
 
     st.markdown(f"**รายเดือน — ปี {sel_yr} | โมเดล: {MODEL_INFO[sel_model_yr].split(' — ')[0]} | Sector: {sel_sector_yr}**")
 
@@ -990,22 +933,17 @@ with tab_year:
     fig_monthly = make_subplots(rows=1, cols=n_cols,
                                  subplot_titles=[f'<b>{s}</b>' for s in sector_list],
                                  shared_yaxes=(n_cols > 1))
-
     MONTH_LABELS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
 
     for ci, sname in enumerate(sector_list, 1):
         ts_s = SECTORS[sname]['total']
         fc_s = ALL_FORECASTS[sname].get(sel_model_yr)
-        sc   = COLORS[sname]
 
         actual_yr = ts_s[ts_s.index.year == sel_yr]
         if len(actual_yr):
             fig_monthly.add_trace(go.Bar(
-                x=[d.strftime('%b') for d in actual_yr.index],
-                y=actual_yr.values,
-                name='Actual' if ci == 1 else '',
-                marker_color='#1A252F',
-                opacity=0.75,
+                x=[d.strftime('%b') for d in actual_yr.index], y=actual_yr.values,
+                name='Actual' if ci == 1 else '', marker_color='#1A252F', opacity=0.75,
                 showlegend=(ci == 1),
                 hovertemplate='%{x}<br>Actual: %{y:,.0f} KT<extra></extra>',
             ), row=1, col=ci)
@@ -1015,13 +953,11 @@ with tab_year:
             tp_yr = tp[tp.index.year == sel_yr]
             if len(tp_yr):
                 fig_monthly.add_trace(go.Scatter(
-                    x=[d.strftime('%b') for d in tp_yr.index],
-                    y=tp_yr.values,
+                    x=[d.strftime('%b') for d in tp_yr.index], y=tp_yr.values,
                     name=f'{sel_model_yr} (test)' if ci == 1 else '',
                     mode='lines+markers',
                     line=dict(color=COLORS.get(sel_model_yr,'#888'), width=2.2),
-                    marker=dict(size=7),
-                    showlegend=(ci == 1),
+                    marker=dict(size=7), showlegend=(ci == 1),
                     hovertemplate=f'%{{x}}<br>{sel_model_yr}: %{{y:,.0f}} KT<extra></extra>',
                 ), row=1, col=ci)
 
@@ -1030,13 +966,11 @@ with tab_year:
             if len(fp_yr):
                 ci_yr = fc_s['ci'][fc_s['ci'].index.year == sel_yr]
                 fig_monthly.add_trace(go.Scatter(
-                    x=[d.strftime('%b') for d in fp_yr.index],
-                    y=fp_yr.values,
+                    x=[d.strftime('%b') for d in fp_yr.index], y=fp_yr.values,
                     name=f'{sel_model_yr} forecast' if ci == 1 else '',
                     mode='lines+markers',
                     line=dict(color=COLORS.get(sel_model_yr,'#888'), width=2.2, dash='dash'),
-                    marker=dict(size=7, symbol='diamond'),
-                    showlegend=(ci == 1),
+                    marker=dict(size=7, symbol='diamond'), showlegend=(ci == 1),
                     hovertemplate=f'%{{x}}<br>Forecast: %{{y:,.0f}} KT<extra></extra>',
                 ), row=1, col=ci)
                 fig_monthly.add_trace(go.Scatter(
@@ -1057,20 +991,15 @@ with tab_year:
                 xref=f'x{ci}' if ci > 1 else 'x', yref='paper',
                 x=5, y=1.12, showarrow=False,
                 font=dict(size=10, color='#1A252F'),
-                bgcolor='rgba(255,255,255,0.8)',
-                bordercolor='#ccc', borderwidth=1,
+                bgcolor='rgba(255,255,255,0.8)', bordercolor='#ccc', borderwidth=1,
             )
 
     fig_monthly.update_layout(
-        height=380,
-        plot_bgcolor='white', paper_bgcolor='white',
+        height=380, plot_bgcolor='white', paper_bgcolor='white',
         legend=dict(orientation='h', y=1.18, x=0),
-        hovermode='x unified',
-        margin=dict(l=50, r=20, t=90, b=50),
-        barmode='overlay',
+        hovermode='x unified', margin=dict(l=50, r=20, t=90, b=50), barmode='overlay',
     )
-    fig_monthly.update_xaxes(showgrid=False, categoryorder='array',
-                              categoryarray=MONTH_LABELS)
+    fig_monthly.update_xaxes(showgrid=False, categoryorder='array', categoryarray=MONTH_LABELS)
     fig_monthly.update_yaxes(showgrid=True, gridcolor='#f0f0f0', tickformat=',.0f')
     st.plotly_chart(fig_monthly, use_container_width=True)
 
@@ -1078,9 +1007,8 @@ with tab_year:
         prev_y = sel_yr - 1
         st.markdown(f"**📊 เปรียบเทียบ {prev_y} vs {sel_yr}**")
         yoy_cols = st.columns(4)
-        total_prev_y = sum(
-            SECTORS[n]['total'][SECTORS[n]['total'].index.year == prev_y].sum()
-            for n in ['Power','Transport','Industry'])
+        total_prev_y = sum(SECTORS[n]['total'][SECTORS[n]['total'].index.year == prev_y].sum()
+                           for n in ['Power','Transport','Industry'])
         for col_yoy, name in zip(yoy_cols[1:], ['Power','Transport','Industry']):
             ts_s  = SECTORS[name]['total']
             v_now = ts_s[ts_s.index.year == sel_yr].sum()
@@ -1103,24 +1031,18 @@ with tab_forecast:
     else:
         for sector_name, df in SECTORS.items():
             ts, train, test = split(df)
-            scolor = COLORS[sector_name]
-            best   = SECTOR_BEST[sector_name]
+            scolor   = COLORS[sector_name]
+            best     = SECTOR_BEST[sector_name]
             best_res = next((r for r in ALL_RESULTS[sector_name] if best in r['Model']), {})
-
-            mape_val = best_res.get('MAPE', 0)
-            mae_val  = best_res.get('MAE', 0)
-            rmse_val = best_res.get('RMSE', 0)
 
             st.markdown(f"""
             <div class="sector-card" style="--sector-color:{scolor}">
-                <b style="color:{scolor}; font-size:1.05rem;">
-                    ⚡ {sector_name} Sector
-                </b>
+                <b style="color:{scolor}; font-size:1.05rem;">⚡ {sector_name} Sector</b>
                 <span class="best-badge">Best: {best}</span>
                 <div class="metric-row" style="margin-top:0.6rem">
-                    <div class="metric-box"><div class="label">MAPE</div><div class="value">{mape_val:.2f}%</div></div>
-                    <div class="metric-box"><div class="label">MAE</div><div class="value">{mae_val:,.0f}</div></div>
-                    <div class="metric-box"><div class="label">RMSE</div><div class="value">{rmse_val:,.0f}</div></div>
+                    <div class="metric-box"><div class="label">MAPE</div><div class="value">{best_res.get('MAPE',0):.2f}%</div></div>
+                    <div class="metric-box"><div class="label">MAE</div><div class="value">{best_res.get('MAE',0):,.0f}</div></div>
+                    <div class="metric-box"><div class="label">RMSE</div><div class="value">{best_res.get('RMSE',0):,.0f}</div></div>
                     <div class="metric-box"><div class="label">FC Months</div><div class="value">{fc_months}</div></div>
                 </div>
             </div>
@@ -1133,21 +1055,20 @@ with tab_forecast:
             with st.expander(f"📋 {sector_name} Forecast Values ({best})"):
                 fc_df = ALL_FORECASTS[sector_name][best]
                 fc_table = pd.DataFrame({
-                    'Date'     : [d.strftime('%Y-%m') for d in fc_df['pred'].index],
-                    'Forecast' : fc_df['pred'].round(1).values,
-                    'CI Lower' : fc_df['ci'].iloc[:,0].round(1).values,
-                    'CI Upper' : fc_df['ci'].iloc[:,1].round(1).values,
+                    'Date'    : [d.strftime('%Y-%m') for d in fc_df['pred'].index],
+                    'Forecast': fc_df['pred'].round(1).values,
+                    'CI Lower': fc_df['ci'].iloc[:,0].round(1).values,
+                    'CI Upper': fc_df['ci'].iloc[:,1].round(1).values,
                 })
                 st.dataframe(fc_table, hide_index=True, use_container_width=True)
 
             st.markdown("<hr style='border-color:#e2ecf9; margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
 # ═══════════════════════════
-# TAB 3: PERFORMANCE METRICS
+# TAB 4: PERFORMANCE METRICS
 # ═══════════════════════════
 with tab_metrics:
     st.markdown('<div class="section-title">📈 Model Performance — Test Period (2024–2025)</div>', unsafe_allow_html=True)
-
     st.plotly_chart(build_mape_bar(ALL_RESULTS), use_container_width=True)
 
     cols = st.columns(3)
@@ -1155,8 +1076,7 @@ with tab_metrics:
         with col:
             st.markdown(f"**{sector_name} Sector**")
             df_r = pd.DataFrame(results)[['Model','MAE','RMSE','MAPE']].copy()
-            df_r['Model'] = df_r['Model'].apply(
-                lambda m: MODEL_DISPLAY.get(normalize_model_name(m), m))
+            df_r['Model'] = df_r['Model'].apply(lambda m: MODEL_DISPLAY.get(normalize_model_name(m), m))
             df_r[['MAE','RMSE','MAPE']] = df_r[['MAE','RMSE','MAPE']].round(2)
             best = SECTOR_BEST[sector_name]
             best_display = MODEL_DISPLAY.get(best, best)
@@ -1172,27 +1092,26 @@ with tab_metrics:
         best_key = SECTOR_BEST[sector_name]
         best_res = next((r for r in results if best_key in r['Model']), {})
         summary_rows.append({
-            'Sector'     : sector_name,
-            'Best Model' : best_res.get('Model', ''),
-            'MAE'        : f"{best_res.get('MAE',0):,.1f}",
-            'RMSE'       : f"{best_res.get('RMSE',0):,.1f}",
-            'MAPE (%)'   : f"{best_res.get('MAPE',0):.2f}%",
+            'Sector'   : sector_name,
+            'Best Model': best_res.get('Model', ''),
+            'MAE'      : f"{best_res.get('MAE',0):,.1f}",
+            'RMSE'     : f"{best_res.get('RMSE',0):,.1f}",
+            'MAPE (%)' : f"{best_res.get('MAPE',0):.2f}%",
         })
     st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
 
 # ═══════════════════════════
-# TAB 4: P-VALUE ANALYSIS
+# TAB 5: P-VALUE ANALYSIS
 # ═══════════════════════════
 with tab_pvalue:
     st.markdown('<div class="section-title">🔬 P-value Analysis — SARIMAX Coefficients</div>', unsafe_allow_html=True)
     st.markdown("""
     P-values indicate statistical significance of each coefficient:
     - **p < 0.001** → *** highly significant
-    - **p < 0.01** → ** significant
-    - **p < 0.05** → * significant
-    - **p ≥ 0.05** → ns (not significant)
+    - **p < 0.01**  → ** significant
+    - **p < 0.05**  → * significant
+    - **p ≥ 0.05**  → ns (not significant)
     """)
-
     for sector_name in SECTORS:
         fc = ALL_FORECASTS[sector_name].get('SARIMAX', {})
         if 'pvalues' in fc:
@@ -1201,33 +1120,31 @@ with tab_pvalue:
             st.info(f"{sector_name}: P-value data not available.")
 
 # ═══════════════════════════
-# TAB 5: DATA TABLE
+# TAB 6: DATA TABLE
 # ═══════════════════════════
 with tab_data:
     st.markdown('<div class="section-title">📋 Raw Data & Forecast Export</div>', unsafe_allow_html=True)
 
-    sec_sel = st.selectbox("Select Sector", list(SECTORS.keys()))
-    df_raw  = SECTORS[sec_sel]
+    sec_sel  = st.selectbox("Select Sector", list(SECTORS.keys()))
+    df_raw   = SECTORS[sec_sel]
     ts, train, test = split(df_raw)
-    fc_best = ALL_FORECASTS[sec_sel][SECTOR_BEST[sec_sel]]
+    fc_best  = ALL_FORECASTS[sec_sel][SECTOR_BEST[sec_sel]]
     FC_INDEX = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
 
     rows = []
     for date, val in ts.items():
         is_test = date in test.index
         rows.append({
-            'Date'  : date.strftime('%Y-%m'),
-            'Period': 'Test' if is_test else 'Train',
-            'Actual': round(val, 1),
-            'Forecast': '',
-            'CI_Lower': '',
-            'CI_Upper': '',
+            'Date'    : date.strftime('%Y-%m'),
+            'Period'  : 'Test' if is_test else 'Train',
+            'Actual'  : round(val, 1),
+            'Forecast': '', 'CI_Lower': '', 'CI_Upper': '',
         })
     for i, (date, val) in enumerate(fc_best['pred'].items()):
         rows.append({
-            'Date'  : date.strftime('%Y-%m'),
-            'Period': 'Forecast',
-            'Actual': '',
+            'Date'    : date.strftime('%Y-%m'),
+            'Period'  : 'Forecast',
+            'Actual'  : '',
             'Forecast': round(val, 1),
             'CI_Lower': round(fc_best['ci'].iloc[i,0], 1),
             'CI_Upper': round(fc_best['ci'].iloc[i,1], 1),
@@ -1250,7 +1167,7 @@ with tab_data:
 st.markdown("""
 <div class="footer">
     CO₂ Emission Forecasting System &nbsp;|&nbsp;
-    Data Source: Mock Simulated Dataset (Internal) &nbsp;|&nbsp;
+    Data Source: EPPO Thailand &nbsp;|&nbsp;
     Models: ARIMA · SARIMAX+COVID · ETS · Prophet · Hybrid1 · Hybrid2 · Hybrid3 &nbsp;|&nbsp;
     Train 2010–2023 · Test 2024–2025 · Forecast 2026–2027
 </div>
