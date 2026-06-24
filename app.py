@@ -607,26 +607,41 @@ combined_annual = pd.Series(0.0, index=all_years)
 for name, a in annual_data.items():
     combined_annual = combined_annual.add(a, fill_value=0)
 
-# ── Key numbers ───────────────────────────────────────────────────────────
-latest_yr = 2024
-prev_yr   = 2019
-peak_yr   = int(combined_annual.idxmax())
+# ── Interactive KPI — เลือกปีและช่วงเปรียบเทียบเอง ──────────────────────
+avail_kpi_years = sorted(all_years)
+
+kpi_col_sel, kpi_col_cmp = st.columns([1, 1])
+with kpi_col_sel:
+    kpi_yr = st.selectbox(
+        "📅 เลือกปีที่ต้องการดู",
+        options=avail_kpi_years[::-1],
+        index=0,
+        key='kpi_yr'
+    )
+with kpi_col_cmp:
+    cmp_options = [y for y in avail_kpi_years if y != kpi_yr]
+    kpi_cmp_yr = st.selectbox(
+        "🔄 เปรียบเทียบกับปี",
+        options=cmp_options[::-1],
+        index=min(4, len(cmp_options)-1),
+        key='kpi_cmp_yr'
+    )
+
+total_kpi  = combined_annual.get(kpi_yr, 0)
+total_cmp  = combined_annual.get(kpi_cmp_yr, 0)
+chg_pct    = (total_kpi - total_cmp) / total_cmp * 100 if total_cmp else 0
 
 c1, c2, c3, c4 = st.columns(4)
-total_latest = combined_annual.get(latest_yr, 0)
-total_prev   = combined_annual.get(prev_yr, 0)
-chg_pct      = (total_latest - total_prev) / total_prev * 100 if total_prev else 0
+c1.metric(f"🌍 Total CO₂ ({kpi_yr})", f"{total_kpi:,.0f} KT",
+          f"{chg_pct:+.1f}% vs {kpi_cmp_yr}")
 
-c1.metric("🌍 Total CO₂ (2024)", f"{total_latest:,.0f} KT", f"{chg_pct:+.1f}% vs {prev_yr}")
-c2.metric("⚡ Power (2024)",
-          f"{annual_data['Power'].get(latest_yr,0):,.0f} KT",
-          f"{annual_data['Power'].get(latest_yr,0)/total_latest*100:.1f}% of total")
-c3.metric("🚗 Transport (2024)",
-          f"{annual_data['Transport'].get(latest_yr,0):,.0f} KT",
-          f"{annual_data['Transport'].get(latest_yr,0)/total_latest*100:.1f}% of total")
-c4.metric("🏭 Industry (2024)",
-          f"{annual_data['Industry'].get(latest_yr,0):,.0f} KT",
-          f"{annual_data['Industry'].get(latest_yr,0)/total_latest*100:.1f}% of total")
+for col_w, (emoji, name) in zip([c2, c3, c4],
+                                  [("⚡","Power"),("🚗","Transport"),("🏭","Industry")]):
+    v_now = annual_data[name].get(kpi_yr, 0)
+    v_cmp = annual_data[name].get(kpi_cmp_yr, 0)
+    chg_s = (v_now - v_cmp) / v_cmp * 100 if v_cmp else 0
+    col_w.metric(f"{emoji} {name} ({kpi_yr})", f"{v_now:,.0f} KT",
+                 f"{chg_s:+.1f}% vs {kpi_cmp_yr}")
 
 # ── Annual stacked bar chart ───────────────────────────────────────────────
 fig_annual = go.Figure()
@@ -713,9 +728,8 @@ status_ph.empty()
 # ─────────────────────────────────────────────
 # TABS
 # ─────────────────────────────────────────────
-tab_overview, tab_year, tab_forecast, tab_metrics, tab_pvalue, tab_data = st.tabs([
-    "📊 Overview", "🔍 Year Explorer", "🔮 Forecast — All Sectors",
-    "📈 Performance Metrics", "🔬 P-value Analysis", "📋 Data Table"
+tab_overview, tab_year, tab_forecast, tab_metrics = st.tabs([
+    "📊 Overview", "🔍 Year Explorer", "🔮 Forecast — All Sectors", "📈 Performance Metrics"
 ])
 
 # ═══════════════════════════
@@ -1047,66 +1061,7 @@ with tab_metrics:
         })
     st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
 
-# ═══════════════════════════
-# TAB 5: P-VALUE ANALYSIS
-# ═══════════════════════════
-with tab_pvalue:
-    st.markdown('<div class="section-title">🔬 P-value Analysis — SARIMAX Coefficients</div>', unsafe_allow_html=True)
-    st.markdown("""
-    P-values indicate statistical significance of each coefficient:
-    - **p < 0.001** → *** highly significant
-    - **p < 0.01**  → ** significant
-    - **p < 0.05**  → * significant
-    - **p ≥ 0.05**  → ns (not significant)
-    """)
-    for sector_name in SECTORS:
-        fc = ALL_FORECASTS[sector_name].get('SARIMAX', {})
-        if 'pvalues' in fc:
-            st.plotly_chart(build_pvalue_chart(fc['pvalues'], sector_name), use_container_width=True)
-        else:
-            st.info(f"{sector_name}: P-value data not available.")
 
-# ═══════════════════════════
-# TAB 6: DATA TABLE
-# ═══════════════════════════
-with tab_data:
-    st.markdown('<div class="section-title">📋 Raw Data & Forecast Export</div>', unsafe_allow_html=True)
-
-    sec_sel  = st.selectbox("Select Sector", list(SECTORS.keys()))
-    df_raw   = SECTORS[sec_sel]
-    ts, train, test = split(df_raw)
-    fc_best  = ALL_FORECASTS[sec_sel][SECTOR_BEST[sec_sel]]
-    FC_INDEX = pd.date_range('2026-01-01', periods=fc_months, freq='MS')
-
-    rows = []
-    for date, val in ts.items():
-        is_test = date in test.index
-        rows.append({
-            'Date'    : date.strftime('%Y-%m'),
-            'Period'  : 'Test' if is_test else 'Train',
-            'Actual'  : round(val, 1),
-            'Forecast': '', 'CI_Lower': '', 'CI_Upper': '',
-        })
-    for i, (date, val) in enumerate(fc_best['pred'].items()):
-        rows.append({
-            'Date'    : date.strftime('%Y-%m'),
-            'Period'  : 'Forecast',
-            'Actual'  : '',
-            'Forecast': round(val, 1),
-            'CI_Lower': round(fc_best['ci'].iloc[i,0], 1),
-            'CI_Upper': round(fc_best['ci'].iloc[i,1], 1),
-        })
-
-    df_export = pd.DataFrame(rows)
-    st.dataframe(df_export, use_container_width=True, height=400)
-
-    csv_bytes = df_export.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
-    st.download_button(
-        label=f"⬇️ Download {sec_sel} Forecast CSV",
-        data=csv_bytes,
-        file_name=f"CO2_Forecast_{sec_sel}_{SECTOR_BEST[sec_sel]}.csv",
-        mime='text/csv',
-    )
 
 # ─────────────────────────────────────────────
 # FOOTER
