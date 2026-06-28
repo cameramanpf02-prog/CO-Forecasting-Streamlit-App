@@ -378,7 +378,7 @@ def build_forecast_chart(ts, train, test, forecasts, selected_models, fc_periods
         (train.index[0], train.index[-1], 'rgba(46,134,193,0.06)', 'Train 2010–2023'),
         (test.index[0],  test.index[-1],  'rgba(230,126,34,0.10)', 'Test 2024–2025'),
         (FC_INDEX[0],    FC_INDEX[-1],    'rgba(0,200,150,0.08)',  'Forecast'),
-        (pd.Timestamp(COVID_START), pd.Timestamp(COVID_END), 'rgba(241,148,138,0.18)', 'COVID-19'),
+
     ]:
         fig.add_vrect(x0=str(start), x1=str(end), fillcolor=color,
                       layer='below', line_width=0,
@@ -571,8 +571,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
     <div style='font-size:0.72rem; color:#5a8aaa; text-align:center;'>
-    Train: 2010–2023<br>Test: 2024–2025<br>
-    COVID dummy: Apr 2020 – Jun 2021<br><br>
+    Train: 2010–2023<br>Test: 2024–2025<br><br>
     <b>7 Models</b> | <b>3 Sectors</b>
     </div>
     """, unsafe_allow_html=True)
@@ -661,10 +660,7 @@ fig_annual.add_trace(go.Scatter(
     hovertemplate='<b>Total</b><br>%{x}: %{y:,.0f} KT<extra></extra>',
 ))
 
-fig_annual.add_vrect(x0=2019.5, x1=2021.5,
-    fillcolor='rgba(241,148,138,0.18)', layer='below', line_width=0,
-    annotation_text='COVID-19', annotation_position='top left',
-    annotation_font_size=9, annotation_font_color='#c0392b')
+
 
 fig_annual.update_layout(
     title=dict(text='<b>Annual CO₂ Emission — Thailand 3 Sectors (2010–2025)</b>',
@@ -680,24 +676,6 @@ fig_annual.update_layout(
 )
 st.plotly_chart(fig_annual, use_container_width=True)
 
-# ── Period summary table ───────────────────────────────────────────────────
-period_rows = []
-for period, yr_range in [('Pre-COVID (2015–2019)', range(2015,2020)),
-                          ('COVID (2020–2021)',      range(2020,2022)),
-                          ('Post-COVID (2022–2024)', range(2022,2025))]:
-    yrs = [y for y in yr_range if y in combined_annual.index]
-    if not yrs: continue
-    row = {'Period': period}
-    total_p = 0
-    for name in ['Power','Transport','Industry']:
-        v = sum(annual_data[name].get(y,0) for y in yrs) / len(yrs)
-        row[f'{name} avg/yr (KT)'] = f"{v:,.0f}"
-        total_p += v
-    row['Total avg/yr (KT)'] = f"{total_p:,.0f}"
-    period_rows.append(row)
-
-st.markdown("**📋 Average Annual CO₂ by Period**")
-st.dataframe(pd.DataFrame(period_rows), hide_index=True, use_container_width=True)
 st.markdown("---")
 
 # ─────────────────────────────────────────────
