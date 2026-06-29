@@ -137,9 +137,17 @@ MODEL_INFO = {
 }
 
 SARIMA_FALLBACK = {
-    'Power'    : None,
-    'Transport': None,
-    'Industry' : ((1,1,1),(1,1,1,12)),
+    'Power'    : None,              # ใช้ auto_arima
+    'Transport': None,              # ใช้ auto_arima
+    'Industry' : ((1,1,1),(1,1,1,12)),  # hardcode ป้องกัน overfit
+}
+
+# Power ไม่ใช้ COVID dummy (ไม่มี significant effect)
+# Transport และ Industry ใช้ COVID dummy
+USE_COVID = {
+    'Power'    : False,
+    'Transport': True,
+    'Industry' : True,
 }
 
 # ─────────────────────────────────────────────
@@ -190,11 +198,24 @@ def calc_metrics(actual, predicted, label=''):
 # MODEL FITTING (cached per sector)
 # ─────────────────────────────────────────────
 @st.cache_data(show_spinner=False)
-def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
+def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods, fuel_data):
+    """
+    fuel_data: dict {col_name: {date_str: value}} สำหรับ fuel mix (oil, coal, gas)
+    ใช้เหมือน Colab: Ridge ทำนาย residual จาก fuel mix ไม่ใช่ lagged residuals
+    """
     train = pd.Series(train_vals['values'], index=pd.DatetimeIndex(train_vals['index']))
     test  = pd.Series(test_vals['values'],  index=pd.DatetimeIndex(test_vals['index']))
     ts    = pd.Series(ts_vals['values'],    index=pd.DatetimeIndex(ts_vals['index']))
     FC_INDEX = pd.date_range('2026-01-01', periods=fc_periods, freq='MS')
+
+    # สร้าง fuel DataFrame จาก fuel_data
+    fuel_df = pd.DataFrame({
+        col: pd.Series({pd.Timestamp(k): v for k, v in vals.items()})
+        for col, vals in fuel_data.items()
+    }).sort_index()
+    fuel_cols = list(fuel_data.keys())
+
+    use_covid = USE_COVID[sector_name]
 
     results   = {}
     forecasts = {}
@@ -212,9 +233,9 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
     fp_a   = fc_a.predicted_mean; fp_a.index = FC_INDEX
     fi_a   = clamp_ci(fc_a.conf_int()); fi_a.index = FC_INDEX
     results['ARIMA']   = calc_metrics(test, tp_a, f'ARIMA{arima_order}')
-    forecasts['ARIMA'] = {'pred': fp_a, 'ci': fi_a, 'test_pred': tp_a, 'order': str(arima_order)}
+    forecasts['ARIMA'] = {'pred': fp_a, 'ci': fi_a, 'test_pred': tp_a}
 
-    # ── SARIMAX+COVID ─────────────────────────
+    # ── SARIMAX (COVID สำหรับ Transport/Industry, SARIMA สำหรับ Power) ──
     if SARIMA_FALLBACK[sector_name]:
         s_order, s_seas = SARIMA_FALLBACK[sector_name]
     else:
@@ -223,13 +244,19 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
                            stepwise=True, information_criterion='bic', trace=False)
         s_order, s_seas = sa.order, sa.seasonal_order
 
-    ex_tr = make_exog(train.index)
-    ex_te = make_exog(test.index)
-    ex_fu = make_exog(ts.loc[TRAIN_START:TEST_END].index)
-    ex_fc = make_exog(FC_INDEX)
+    # exog: ใส่ COVID dummy เฉพาะ sector ที่ use_covid=True
+    def _exog(index):
+        if use_covid:
+            return make_exog(index)
+        return None
 
-    fit_s = SARIMAX(train, exog=ex_tr, order=s_order, seasonal_order=s_seas).fit(disp=False)
-    tp_s  = fit_s.get_forecast(steps=len(test), exog=ex_te).predicted_mean
+    ex_tr = _exog(train.index)
+    ex_te = _exog(test.index)
+    ex_fu = _exog(ts.loc[TRAIN_START:TEST_END].index)
+    ex_fc = _exog(FC_INDEX)
+
+    fit_s  = SARIMAX(train, exog=ex_tr, order=s_order, seasonal_order=s_seas).fit(disp=False)
+    tp_s   = fit_s.get_forecast(steps=len(test), exog=ex_te).predicted_mean
     tp_s.index = test.index
     fit_sf = SARIMAX(ts.loc[TRAIN_START:TEST_END], exog=ex_fu, order=s_order, seasonal_order=s_seas).fit(disp=False)
     fc_s   = fit_sf.get_forecast(steps=fc_periods, exog=ex_fc)
@@ -237,15 +264,14 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
     fi_s   = clamp_ci(fc_s.conf_int()); fi_s.index = FC_INDEX
     pvals  = pd.DataFrame({'coef': fit_s.params, 'p-value': fit_s.pvalues})
     pvals['sig'] = pvals['p-value'].apply(lambda p: '***' if p<0.001 else ('**' if p<0.01 else ('*' if p<0.05 else 'ns')))
-
-    results['SARIMAX']   = calc_metrics(test, tp_s, 'SARIMAX+COVID')
-    forecasts['SARIMAX'] = {'pred': fp_s, 'ci': fi_s, 'test_pred': tp_s,
-                             'order': f'{s_order}x{s_seas}', 'pvalues': pvals}
+    s_label = 'SARIMAX+COVID' if use_covid else f'SARIMA{s_order}x{s_seas}'
+    results['SARIMAX']   = calc_metrics(test, tp_s, s_label)
+    forecasts['SARIMAX'] = {'pred': fp_s, 'ci': fi_s, 'test_pred': tp_s, 'pvalues': pvals}
 
     # ── ETS ───────────────────────────────────
-    fit_e = ExponentialSmoothing(train, trend='add', seasonal='add',
-                                  seasonal_periods=12, damped_trend=True).fit(optimized=True)
-    tp_e  = pd.Series(fit_e.forecast(len(test)), index=test.index)
+    fit_e  = ExponentialSmoothing(train, trend='add', seasonal='add',
+                                   seasonal_periods=12, damped_trend=True).fit(optimized=True)
+    tp_e   = pd.Series(fit_e.forecast(len(test)), index=test.index)
     fit_ef = ExponentialSmoothing(ts.loc[TRAIN_START:TEST_END], trend='add', seasonal='add',
                                    seasonal_periods=12, damped_trend=True).fit(optimized=True)
     fp_e   = pd.Series(fit_ef.forecast(fc_periods), index=FC_INDEX)
@@ -260,65 +286,57 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
     m_pr  = Prophet(yearly_seasonality=True, weekly_seasonality=False,
                     daily_seasonality=False, seasonality_mode='multiplicative')
     m_pr.fit(df_pr)
-    fut_te  = pd.DataFrame({'ds': test.index})
-    tp_pr   = pd.Series(m_pr.predict(fut_te)['yhat'].values, index=test.index)
-    df_prf  = pd.DataFrame({'ds': ts.loc[TRAIN_START:TEST_END].index, 'y': ts.loc[TRAIN_START:TEST_END].values})
-    m_prf   = Prophet(yearly_seasonality=True, weekly_seasonality=False,
-                      daily_seasonality=False, seasonality_mode='multiplicative')
+    tp_pr = pd.Series(m_pr.predict(pd.DataFrame({'ds': test.index}))['yhat'].values, index=test.index)
+    df_prf = pd.DataFrame({'ds': ts.loc[TRAIN_START:TEST_END].index, 'y': ts.loc[TRAIN_START:TEST_END].values})
+    m_prf = Prophet(yearly_seasonality=True, weekly_seasonality=False,
+                    daily_seasonality=False, seasonality_mode='multiplicative')
     m_prf.fit(df_prf)
-    fut_fc  = pd.DataFrame({'ds': FC_INDEX})
-    pr_fc   = m_prf.predict(fut_fc)
-    fp_pr   = pd.Series(pr_fc['yhat'].values, index=FC_INDEX)
-    fi_pr   = pd.DataFrame({'lower': pr_fc['yhat_lower'].clip(0).values,
-                             'upper': pr_fc['yhat_upper'].values}, index=FC_INDEX)
+    pr_fc = m_prf.predict(pd.DataFrame({'ds': FC_INDEX}))
+    fp_pr = pd.Series(pr_fc['yhat'].values, index=FC_INDEX)
+    fi_pr = pd.DataFrame({'lower': pr_fc['yhat_lower'].clip(0).values,
+                           'upper': pr_fc['yhat_upper'].values}, index=FC_INDEX)
     results['Prophet']   = calc_metrics(test, tp_pr, 'Prophet')
     forecasts['Prophet'] = {'pred': fp_pr, 'ci': fi_pr, 'test_pred': tp_pr}
 
-    # ── Hybrid 1: SARIMAX + Ridge ─────────────
+    # ── Hybrid 1: SARIMAX/SARIMA + Ridge (fuel mix) ──────────────────────
+    # เหมือน Colab: Ridge ทำนาย residual จาก fuel columns (oil, coal, gas)
     resid_train = train - fit_s.fittedvalues
     scaler1 = StandardScaler()
-    lags = 3
-    X_tr = np.column_stack([resid_train.shift(i).fillna(0).values for i in range(1, lags+1)])
-    X_tr_sc = scaler1.fit_transform(X_tr)
-    ridge1  = Ridge(alpha=1.0); ridge1.fit(X_tr_sc, resid_train.values)
+    X_tr1   = scaler1.fit_transform(fuel_df.loc[train.index, fuel_cols].values)
+    ridge1  = Ridge(alpha=1.0); ridge1.fit(X_tr1, resid_train.values)
 
-    resid_te  = test - tp_s
-    X_te = np.column_stack([resid_te.shift(i).fillna(0).values for i in range(1, lags+1)])
-    X_te_sc   = scaler1.transform(X_te)
-    tp_h1     = tp_s + pd.Series(ridge1.predict(X_te_sc), index=test.index)
+    X_te1 = scaler1.transform(fuel_df.loc[test.index, fuel_cols].values)
+    tp_h1 = (tp_s + pd.Series(ridge1.predict(X_te1), index=test.index)).clip(lower=0)
 
-    fc_resid_vals = np.zeros(fc_periods)
-    for i in range(fc_periods):
-        lag_vals = [fc_resid_vals[i-j] if i-j >= 0 else 0 for j in range(1, lags+1)]
-        x_new    = scaler1.transform([lag_vals])
-        fc_resid_vals[i] = ridge1.predict(x_new)[0]
-    fp_h1 = fp_s + pd.Series(fc_resid_vals, index=FC_INDEX)
+    # Forecast: ใช้ค่าเฉลี่ย fuel 12 เดือนล่าสุดของ full period
+    last_fuel = fuel_df.loc[ts.loc[TRAIN_START:TEST_END].index[-12:], fuel_cols].mean().values
+    X_fc1 = scaler1.transform(np.tile(last_fuel, (fc_periods, 1)))
+    fp_h1 = (fp_s + pd.Series(ridge1.predict(X_fc1), index=FC_INDEX)).clip(lower=0)
     ci_half = fi_s.iloc[:,1] - fi_s.iloc[:,0]
     fi_h1 = pd.DataFrame({'lower': (fp_h1 - ci_half/2).clip(0).values,
                            'upper': (fp_h1 + ci_half/2).values}, index=FC_INDEX)
-    results['Hybrid1']   = calc_metrics(test, tp_h1, 'Hybrid1(SARIMAX+Ridge)')
+    h1_label = 'Hybrid1(SARIMAX+Ridge)' if use_covid else 'Hybrid1(SARIMA+Ridge)'
+    results['Hybrid1']   = calc_metrics(test, tp_h1, h1_label)
     forecasts['Hybrid1'] = {'pred': fp_h1, 'ci': fi_h1, 'test_pred': tp_h1}
 
-    # ── Hybrid 2: ETS + Ridge ─────────────────
+    # ── Hybrid 2: ETS + Ridge (fuel mix) ─────────────────────────────────
+    # เหมือน Colab: Ridge ทำนาย residual จาก fuel columns
     resid_ets = train - fit_e.fittedvalues
-    scaler2 = StandardScaler()
-    X_tr2 = np.column_stack([resid_ets.shift(i).fillna(0).values for i in range(1, lags+1)])
-    X_tr2_sc = scaler2.fit_transform(X_tr2)
-    ridge2 = Ridge(alpha=1.0); ridge2.fit(X_tr2_sc, resid_ets.values)
+    scaler2   = StandardScaler()
+    X_tr2     = scaler2.fit_transform(fuel_df.loc[train.index, fuel_cols].values)
+    ridge2    = Ridge(alpha=1.0); ridge2.fit(X_tr2, resid_ets.values)
 
-    resid_ets_te = test - tp_e
-    X_te2 = np.column_stack([resid_ets_te.shift(i).fillna(0).values for i in range(1, lags+1)])
-    X_te2_sc = scaler2.transform(X_te2)
-    tp_h2 = tp_e + pd.Series(ridge2.predict(X_te2_sc), index=test.index)
+    X_te2 = scaler2.transform(fuel_df.loc[test.index, fuel_cols].values)
+    tp_h2 = (tp_e + pd.Series(ridge2.predict(X_te2), index=test.index)).clip(lower=0)
 
-    fc_resid2 = np.zeros(fc_periods)
-    for i in range(fc_periods):
-        lag_vals2 = [fc_resid2[i-j] if i-j >= 0 else 0 for j in range(1, lags+1)]
-        x_new2 = scaler2.transform([lag_vals2])
-        fc_resid2[i] = ridge2.predict(x_new2)[0]
-    fp_h2 = fp_e + pd.Series(fc_resid2, index=FC_INDEX)
-    fi_h2 = pd.DataFrame({'lower': (fp_h2 - ci_half/2).clip(0).values,
-                           'upper': (fp_h2 + ci_half/2).values}, index=FC_INDEX)
+    last_fuel2 = fuel_df.loc[ts.loc[TRAIN_START:TEST_END].index[-12:], fuel_cols].mean().values
+    X_fc2  = scaler2.transform(np.tile(last_fuel2, (fc_periods, 1)))
+    fp_h2  = (fp_e + pd.Series(ridge2.predict(X_fc2), index=FC_INDEX)).clip(lower=0)
+    resid_std2 = np.std(fit_e.resid)
+    fi_h2 = pd.DataFrame({
+        'lower': (fp_h2 - 1.96*resid_std2*np.sqrt(np.arange(1,fc_periods+1))).clip(0).values,
+        'upper': (fp_h2 + 1.96*resid_std2*np.sqrt(np.arange(1,fc_periods+1))).values
+    }, index=FC_INDEX)
     results['Hybrid2']   = calc_metrics(test, tp_h2, 'Hybrid2(ETS+Ridge)')
     forecasts['Hybrid2'] = {'pred': fp_h2, 'ci': fi_h2, 'test_pred': tp_h2}
 
@@ -326,8 +344,8 @@ def fit_all_models(sector_name, train_vals, test_vals, ts_vals, fc_periods):
     alpha = 0.5
     tp_h3 = alpha * tp_s + (1-alpha) * tp_pr
     fp_h3 = alpha * fp_s + (1-alpha) * fp_pr
-    fi_h3 = pd.DataFrame({'lower': (alpha * fi_s.iloc[:,0].values + (1-alpha) * fi_pr.iloc[:,0].values).clip(0),
-                           'upper':  alpha * fi_s.iloc[:,1].values + (1-alpha) * fi_pr.iloc[:,1].values}, index=FC_INDEX)
+    fi_h3 = pd.DataFrame({'lower': (alpha*fi_s.iloc[:,0].values + (1-alpha)*fi_pr.iloc[:,0].values).clip(0),
+                           'upper':  alpha*fi_s.iloc[:,1].values + (1-alpha)*fi_pr.iloc[:,1].values}, index=FC_INDEX)
     results['Hybrid3']   = calc_metrics(test, tp_h3, 'Hybrid3(SARIMAX+Prophet)')
     forecasts['Hybrid3'] = {'pred': fp_h3, 'ci': fi_h3, 'test_pred': tp_h3}
 
@@ -695,7 +713,13 @@ for i, (sector_name, df) in enumerate(SECTORS.items()):
     test_ser  = {'index': [str(x) for x in test.index],  'values': test.tolist()}
     ts_ser    = {'index': [str(x) for x in ts.index],    'values': ts.tolist()}
 
-    raw_results, ser_fc = fit_all_models(sector_name, train_ser, test_ser, ts_ser, fc_months)
+    # สร้าง fuel_data dict (ไม่รวม 'total') สำหรับ Ridge fuel mix
+    fuel_cols_s = [c for c in df.columns if c != 'total']
+    fuel_data_s = {
+        col: {str(dt)[:7]: float(v) for dt, v in df[col].items()}
+        for col in fuel_cols_s
+    }
+    raw_results, ser_fc = fit_all_models(sector_name, train_ser, test_ser, ts_ser, fc_months, fuel_data_s)
     ALL_RESULTS[sector_name]   = list(raw_results.values())
     ALL_FORECASTS[sector_name] = deserialize_forecasts(ser_fc)
     progress_bar.progress((i+1)/3)
