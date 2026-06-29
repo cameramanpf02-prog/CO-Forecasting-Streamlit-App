@@ -490,6 +490,9 @@ def normalize_model_name(raw_name):
     for key in MODEL_ORDER:
         if key in raw_name:
             return key
+    # จัดการ label แบบ Colab: 'SARIMA(...)x(...)' → SARIMAX
+    if raw_name.startswith('SARIMA'):
+        return 'SARIMAX'
     return raw_name
 
 MODEL_DISPLAY = {
@@ -515,6 +518,8 @@ def build_mape_bar(results_all):
     sector_colors = {'Power': COLORS['Power'], 'Transport': COLORS['Transport'], 'Industry': COLORS['Industry']}
     for sector, sc in sector_colors.items():
         df_s = df[df['Sector'] == sector].copy()
+        # drop duplicates ก่อน เพื่อป้องกัน duplicate labels error
+        df_s = df_s.drop_duplicates(subset='ModelKey')
         df_s = df_s.set_index('ModelKey').reindex(MODEL_XORDER).reset_index()
         fig.add_trace(go.Bar(
             name=sector,
